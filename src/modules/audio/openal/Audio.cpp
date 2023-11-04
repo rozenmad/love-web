@@ -392,6 +392,7 @@ void Audio::getPlaybackDevices(std::vector<std::string> &list)
 
 void Audio::setPlaybackDevice(const char* name)
 {
+#ifndef LOVE_EMSCRIPTEN
 #ifndef ALC_SOFT_reopen_device
 	typedef ALCboolean (ALC_APIENTRY*LPALCREOPENDEVICESOFT)(ALCdevice *device,
 		const ALCchar *deviceName, const ALCint *attribs);
@@ -410,6 +411,7 @@ void Audio::setPlaybackDevice(const char* name)
 
 	if (alcReopenDeviceSOFT(device, (const ALCchar *) name, attribs.data()) == ALC_FALSE)
 		throw love::Exception("Cannot set output device: %s", alcGetString(device, alcGetError(device)));
+#endif
 }
 
 void Audio::setVolume(float volume)
@@ -709,6 +711,11 @@ bool Audio::isEFXsupported() const
 #else
 	return false;
 #endif
+}
+
+void Audio::poolUpdate()
+{
+	pool->update();
 }
 
 bool Audio::getEffectID(const char *name, ALuint &id)

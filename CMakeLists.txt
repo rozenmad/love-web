@@ -613,34 +613,44 @@ set(LOVE_SRC_MODULE_GRAPHICS_OPENGL
 	src/modules/graphics/opengl/Texture.h
 )
 
-set(LOVE_SRC_MODULE_GRAPHICS_VULKAN
-	src/modules/graphics/vulkan/Graphics.h
-	src/modules/graphics/vulkan/Graphics.cpp
-	src/modules/graphics/vulkan/GraphicsReadback.h
-	src/modules/graphics/vulkan/GraphicsReadback.cpp
-	src/modules/graphics/vulkan/Shader.h
-	src/modules/graphics/vulkan/Shader.cpp
-	src/modules/graphics/vulkan/ShaderStage.h
-	src/modules/graphics/vulkan/ShaderStage.cpp
-	src/modules/graphics/vulkan/StreamBuffer.h
-	src/modules/graphics/vulkan/StreamBuffer.cpp
-	src/modules/graphics/vulkan/Buffer.h
-	src/modules/graphics/vulkan/Buffer.cpp
-	src/modules/graphics/vulkan/Texture.h
-	src/modules/graphics/vulkan/Texture.cpp
-	src/modules/graphics/vulkan/Vulkan.h
-	src/modules/graphics/vulkan/Vulkan.cpp
-	src/modules/graphics/vulkan/VulkanWrapper.h)
+if(EMSCRIPTEN)
+	set(LOVE_SRC_MODULE_GRAPHICS
+		${LOVE_SRC_MODULE_GRAPHICS_ROOT}
+		${LOVE_SRC_MODULE_GRAPHICS_OPENGL}
+	)
 
-set(LOVE_SRC_MODULE_GRAPHICS
-	${LOVE_SRC_MODULE_GRAPHICS_ROOT}
-	${LOVE_SRC_MODULE_GRAPHICS_OPENGL}
-	${LOVE_SRC_MODULE_GRAPHICS_VULKAN}
-)
+	source_group("modules\\graphics" FILES ${LOVE_SRC_MODULE_GRAPHICS_ROOT})
+	source_group("modules\\graphics\\opengl" FILES ${LOVE_SRC_MODULE_GRAPHICS_OPENGL})
+else()
+	set(LOVE_SRC_MODULE_GRAPHICS_VULKAN
+		src/modules/graphics/vulkan/Graphics.h
+		src/modules/graphics/vulkan/Graphics.cpp
+		src/modules/graphics/vulkan/GraphicsReadback.h
+		src/modules/graphics/vulkan/GraphicsReadback.cpp
+		src/modules/graphics/vulkan/Shader.h
+		src/modules/graphics/vulkan/Shader.cpp
+		src/modules/graphics/vulkan/ShaderStage.h
+		src/modules/graphics/vulkan/ShaderStage.cpp
+		src/modules/graphics/vulkan/StreamBuffer.h
+		src/modules/graphics/vulkan/StreamBuffer.cpp
+		src/modules/graphics/vulkan/Buffer.h
+		src/modules/graphics/vulkan/Buffer.cpp
+		src/modules/graphics/vulkan/Texture.h
+		src/modules/graphics/vulkan/Texture.cpp
+		src/modules/graphics/vulkan/Vulkan.h
+		src/modules/graphics/vulkan/Vulkan.cpp
+		src/modules/graphics/vulkan/VulkanWrapper.h)
 
-source_group("modules\\graphics" FILES ${LOVE_SRC_MODULE_GRAPHICS_ROOT})
-source_group("modules\\graphics\\opengl" FILES ${LOVE_SRC_MODULE_GRAPHICS_OPENGL})
-source_group("modules\\graphics\\vulkan" FILES ${LOVE_SRC_MODULE_GRAPHICS_VULKAN})
+	set(LOVE_SRC_MODULE_GRAPHICS
+		${LOVE_SRC_MODULE_GRAPHICS_ROOT}
+		${LOVE_SRC_MODULE_GRAPHICS_OPENGL}
+		${LOVE_SRC_MODULE_GRAPHICS_VULKAN}
+	)
+
+	source_group("modules\\graphics" FILES ${LOVE_SRC_MODULE_GRAPHICS_ROOT})
+	source_group("modules\\graphics\\opengl" FILES ${LOVE_SRC_MODULE_GRAPHICS_OPENGL})
+	source_group("modules\\graphics\\vulkan" FILES ${LOVE_SRC_MODULE_GRAPHICS_VULKAN})
+endif()
 
 #
 # love.image
@@ -1988,9 +1998,36 @@ endif()
 # love (executable)
 #
 if(NOT ANDROID)
-	add_executable(${LOVE_EXE_NAME} WIN32 src/love.cpp ${LOVE_RC})
-	target_link_libraries(${LOVE_EXE_NAME} ${LOVE_LIB_NAME})
-	set_target_properties(${LOVE_EXE_NAME} PROPERTIES C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+	if(EMSCRIPTEN)
+		add_definitions(
+			"-fexceptions"
+			"-s USE_SDL=2"
+			"--post-js ${CMAKE_CURRENT_SOURCE_DIR}/src/scripts/EmscriptenPersistence.js")
+
+		set(EMSCRIPTEN_ARGS
+			"-fexceptions"
+			"-s WASM=1"
+			"-s FULL_ES2=1"
+			"-s FULL_ES3=1"
+			"-s USE_SDL=2"
+			"-s CASE_INSENSITIVE_FS=1"
+			"-s MODULARIZE=1"
+			"-s EXPORT_NAME=\"'Love'\""
+			"-s EXPORTED_FUNCTIONS=\"['_main','_malloc']\""
+			"-s ALLOW_MEMORY_GROWTH=1" # for dynamic resizing of memory, should not have a performance impact as using WASM
+			"-s FORCE_FILESYSTEM=1" # to fix Module.addDependency not existing
+			"-lidbfs.js" # to fix the ReferenceError: IDBFS is not defined
+			"-lwebsocket.js" # websocket API
+			"-lopenal"
+		)
+		
+		add_executable(${LOVE_EXE_NAME} src/love.cpp)
+		target_link_libraries(${LOVE_EXE_NAME} ${LOVE_LIB_NAME} ${EMSCRIPTEN_ARGS})
+	else()
+		add_executable(${LOVE_EXE_NAME} WIN32 src/love.cpp ${LOVE_RC})
+		target_link_libraries(${LOVE_EXE_NAME} ${LOVE_LIB_NAME})
+		set_target_properties(${LOVE_EXE_NAME} PROPERTIES C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+	endif()
 
 	if(MSVC)
 		add_executable(${LOVE_CONSOLE_EXE_NAME} src/love.cpp ${LOVE_RC})

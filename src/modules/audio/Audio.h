@@ -312,6 +312,8 @@ public:
 	 */
 	virtual void setPlaybackDevice(const char *name);
 
+	virtual void poolUpdate();
+
 private:
 
 	static StringMap<DistanceModel, DISTANCE_MAX_ENUM>::Entry distanceModelEntries[];

@@ -47,6 +47,10 @@ extern "C" {
 #include "common/ios.h"
 #endif
 
+#ifdef LOVE_EMSCRIPTEN
+#include <emscripten.h>
+#endif 
+
 #ifdef LOVE_WINDOWS
 extern "C"
 {
@@ -259,12 +263,25 @@ static DoneAction runlove(int argc, char **argv, int &retval, love::Variant &res
 	lua_pushvalue(L, -2);
 	int stackpos = lua_gettop(L);
 	int nres;
+	#ifdef LOVE_EMSCRIPTEN
+	emscripten_set_main_loop_arg([](void *arg) {
+		lua_State *L = static_cast<lua_State *>(arg);
+		int stackpos = lua_gettop(L);
+
+		if (lua_resume(L, 0) == LUA_YIELD) {
+			lua_pop(L, lua_gettop(L) - stackpos);
+		} else {
+			emscripten_cancel_main_loop();
+		};
+	}, (void *)L, 0, 1);
+	#else
 	while (love::luax_resume(L, 0, &nres) == LUA_YIELD)
 #if LUA_VERSION_NUM >= 504
 		lua_pop(L, nres);
 #else
 		lua_pop(L, lua_gettop(L) - stackpos);
 #endif
+	#endif //LOVE_EMSCRIPTEN
 
 	retval = 0;
 	DoneAction done = DONE_QUIT;

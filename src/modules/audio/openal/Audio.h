@@ -52,7 +52,9 @@
 #else
 #include <AL/alc.h>
 #include <AL/al.h>
+#ifndef LOVE_EMSCRIPTEN
 #include <AL/alext.h>
+#endif // LOVE_EMSCRIPTEN
 #endif
 
 namespace love
@@ -130,6 +132,8 @@ public:
 	std::string getPlaybackDevice();
 	void getPlaybackDevices(std::vector<std::string> &list);
 	void setPlaybackDevice(const char *name);
+
+	void poolUpdate();
 
 private:
 	void initializeEFX();

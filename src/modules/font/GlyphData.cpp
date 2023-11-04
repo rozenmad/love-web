@@ -37,8 +37,13 @@ GlyphData::GlyphData(uint32 glyph, GlyphMetrics glyphMetrics, PixelFormat f)
 	, data(nullptr)
 	, format(f)
 {
+#ifdef LOVE_EMSCRIPTEN
+	if (f != PIXELFORMAT_RG8_UNORM && f != PIXELFORMAT_RGBA8_UNORM)
+		throw love::Exception("Invalid GlyphData pixel format.");
+#else
 	if (f != PIXELFORMAT_LA8_UNORM && f != PIXELFORMAT_RGBA8_UNORM)
 		throw love::Exception("Invalid GlyphData pixel format.");
+#endif
 
 	if (metrics.width > 0 && metrics.height > 0)
 		data = new uint8[metrics.width * metrics.height * getPixelSize()];

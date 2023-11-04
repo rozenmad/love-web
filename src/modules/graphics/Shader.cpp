@@ -248,7 +248,7 @@ static const char vertex_header[] = R"(
 
 static const char vertex_functions[] = R"()";
 
-static const char vertex_main[] = R"(
+static const char vertex_main_header[] = R"(
 LOVE_IO_LOCATION(0) attribute vec4 VertexPosition;
 LOVE_IO_LOCATION(1) attribute vec4 VertexTexCoord;
 LOVE_IO_LOCATION(2) attribute vec4 VertexColor;
@@ -257,7 +257,9 @@ varying vec4 VaryingTexCoord;
 varying vec4 VaryingColor;
 
 vec4 position(mat4 clipSpaceFromLocal, vec4 localPosition);
+)";
 
+static const char vertex_main[] = R"(
 void main() {
 	VaryingTexCoord = VertexTexCoord;
 	VaryingColor = gammaCorrectColor(VertexColor) * ConstantColor;
@@ -265,9 +267,11 @@ void main() {
 }
 )";
 
-static const char vertex_main_raw[] = R"(
+static const char vertex_main_raw_header[] = R"(
 void vertexmain();
+)";
 
+static const char vertex_main_raw[] = R"(
 void main() {
 	vertexmain();
 }
@@ -313,7 +317,7 @@ vec4 VideoTexel(vec2 texcoords) {
 }
 )";
 
-static const char pixel_main[] = R"(
+static const char pixel_main_header[] = R"(
 #if __VERSION__ >= 130
 	LOVE_IO_LOCATION(0) out vec4 love_PixelColor;
 #else
@@ -325,13 +329,15 @@ varying LOVE_HIGHP_OR_MEDIUMP vec4 VaryingTexCoord;
 varying mediump vec4 VaryingColor;
 
 vec4 effect(vec4 vcolor, Image tex, vec2 texcoord, vec2 pixcoord);
+)";
 
+static const char pixel_main[] = R"(
 void main() {
 	love_PixelColor = effect(VaryingColor, MainTex, VaryingTexCoord.st, love_PixelCoord);
 }
 )";
 
-static const char pixel_main_custom[] = R"(
+static const char pixel_main_custom_header[] = R"(
 #if __VERSION__ >= 130
 	// Some drivers seem to make the pixel shader do more work when multiple
 	// pixel shader outputs are defined, even when only one is actually used.
@@ -360,15 +366,19 @@ varying LOVE_HIGHP_OR_MEDIUMP vec4 VaryingTexCoord;
 varying mediump vec4 VaryingColor;
 
 void effect();
+)";
 
+static const char pixel_main_custom[] = R"(
 void main() {
 	effect();
 }
 )";
 
-static const char pixel_main_raw[] = R"(
+static const char pixel_main_raw_header[] = R"(
 void pixelmain();
+)";
 
+static const char pixel_main_raw[] = R"(
 void main() {
 	pixelmain();
 }
@@ -396,6 +406,9 @@ void main() {
 }
 )";
 
+static const char empty[] = R"(
+)";
+
 struct StageInfo
 {
 	const char *name;
@@ -412,6 +425,13 @@ static const StageInfo stageInfo[] =
 	{ "VERTEX", vertex_header, render_uniforms, vertex_functions, vertex_main, vertex_main, vertex_main_raw },
 	{ "PIXEL", pixel_header, render_uniforms, pixel_functions, pixel_main, pixel_main_custom, pixel_main_raw },
 	{ "COMPUTE", compute_header, compute_uniforms, compute_functions, compute_main, compute_main, compute_main },
+};
+
+static const StageInfo stageInfo_header[] =
+{
+	{ "VERTEX", empty, empty, empty, vertex_main_header, vertex_main_header, vertex_main_raw_header },
+	{ "PIXEL", empty, empty, empty, pixel_main_header, pixel_main_custom_header, pixel_main_raw_header },
+	{ "COMPUTE", empty, empty, empty, empty, empty, empty },
 };
 
 static_assert((sizeof(stageInfo) / sizeof(StageInfo)) == SHADERSTAGE_MAX_ENUM, "Stages array size must match ShaderStage enum.");
@@ -645,6 +665,7 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 		lang = LANGUAGE_GLSL3;
 
 	glsl::StageInfo stageinfo = glsl::stageInfo[stage];
+	glsl::StageInfo stageinfo_header = glsl::stageInfo_header[stage];
 
 	std::stringstream ss;
 
@@ -657,10 +678,14 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 	if (info.usesMRT)
 		ss << "#define LOVE_MULTI_RENDER_TARGETS 1\n";
 
+#ifdef LOVE_EMSCRIPTEN
+	ss << "#define LOVE_SPLIT_UNIFORMS_PER_DRAW 1\n";
+#else
 	// Note: backends are expected to handle this situation if highp is ever
 	// conditional in that backend.
 	if (!gfx->getCapabilities().features[Graphics::FEATURE_PIXEL_SHADER_HIGHP])
 		ss << "#define LOVE_SPLIT_UNIFORMS_PER_DRAW 1\n";
+#endif
 
 	for (const auto &def : options.defines)
 		ss << "#define " + def.first + " " + def.second + "\n";
@@ -673,6 +698,18 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 	ss << stageinfo.functions;
 
 	if (info.stages[stage] == ENTRYPOINT_HIGHLEVEL)
+		ss << stageinfo_header.main;
+	else if (info.stages[stage] == ENTRYPOINT_CUSTOM)
+		ss << stageinfo_header.main_custom;
+	else if (info.stages[stage] == ENTRYPOINT_RAW)
+		ss << stageinfo_header.main_raw;
+	else
+		throw love::Exception("Unknown shader entry point %d", info.stages[stage]);
+
+	ss << ((!gles && (lang == Shader::LANGUAGE_GLSL1 || glsl1on3)) ? "#line 0\n" : "#line 1\n");
+	ss << code;
+
+	if (info.stages[stage] == ENTRYPOINT_HIGHLEVEL)
 		ss << stageinfo.main;
 	else if (info.stages[stage] == ENTRYPOINT_CUSTOM)
 		ss << stageinfo.main_custom;
@@ -680,8 +717,6 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 		ss << stageinfo.main_raw;
 	else
 		throw love::Exception("Unknown shader entry point %d", info.stages[stage]);
-	ss << ((!gles && (lang == Shader::LANGUAGE_GLSL1 || glsl1on3)) ? "#line 0\n" : "#line 1\n");
-	ss << code;
 
 	return ss.str();
 }

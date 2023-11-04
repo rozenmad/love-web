@@ -28,6 +28,10 @@
 #include "Variant.h"
 #include "deprecation.h"
 
+#ifdef LOVE_EMSCRIPTEN
+#include <emscripten.h>
+#endif 
+
 // Lua
 extern "C" {
 	#define LUA_COMPAT_ALL
@@ -672,8 +676,15 @@ int luax_catchexcept(lua_State *L, const T& func)
 	}
 	catch (const std::exception &e)
 	{
+		const char *message = e.what();
 		should_error = true;
-		lua_pushstring(L, e.what());
+		lua_pushstring(L, message);
+
+#ifdef LOVE_EMSCRIPTEN
+		EM_ASM(
+			Module.setExceptionMessage(UTF8ToString($0)), message
+		);
+#endif
 	}
 
 	if (should_error)
@@ -693,8 +704,15 @@ int luax_catchexcept(lua_State *L, const T& func, const F& finallyfunc)
 	}
 	catch (const std::exception &e)
 	{
+		const char *message = e.what();
 		should_error = true;
-		lua_pushstring(L, e.what());
+		lua_pushstring(L, message);
+
+#ifdef LOVE_EMSCRIPTEN
+		EM_ASM(
+			Module.setExceptionMessage(UTF8ToString($0)), message
+		);
+#endif
 	}
 
 	finallyfunc(should_error);

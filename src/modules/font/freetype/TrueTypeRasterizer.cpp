@@ -137,8 +137,12 @@ GlyphData *TrueTypeRasterizer::getGlyphDataForIndex(int index) const
 	glyphMetrics.width = bitmap.width;
 	glyphMetrics.advance = (int) (ftglyph->advance.x >> 16);
 
+#ifdef LOVE_EMSCRIPTEN
 	// TODO: https://stackoverflow.com/questions/60526004/how-to-get-glyph-unicode-using-freetype/69730502#69730502
+	GlyphData *glyphData = new GlyphData(0, glyphMetrics, PIXELFORMAT_RG8_UNORM);
+#else
 	GlyphData *glyphData = new GlyphData(0, glyphMetrics, PIXELFORMAT_LA8_UNORM);
+#endif
 
 	const uint8 *pixels = bitmap.buffer;
 	uint8 *dest = (uint8 *) glyphData->getData();

@@ -88,8 +88,13 @@ Font::Font(love::font::Rasterizer *r, const SamplerState &s)
 	gd->release();
 
 	auto gfx = Module::getInstance<Graphics>(Module::M_GRAPHICS);
+
+#ifdef LOVE_EMSCRIPTEN
+	pixelFormat = PIXELFORMAT_RGBA8_UNORM;
+#else
 	if (pixelFormat == PIXELFORMAT_LA8_UNORM && !gfx->isPixelFormatSupported(pixelFormat, PIXELFORMATUSAGEFLAGS_SAMPLE))
 		pixelFormat = PIXELFORMAT_RGBA8_UNORM;
+#endif
 
 	loadVolatile();
 	++fontCount;
@@ -275,8 +280,13 @@ const Font::Glyph &Font::addGlyph(love::font::TextShaper::GlyphIndex glyphindex)
 
 		if (pixelFormat != gd->getFormat())
 		{
+#ifdef LOVE_EMSCRIPTEN
+			if (!(pixelFormat == PIXELFORMAT_RGBA8_UNORM && gd->getFormat() == PIXELFORMAT_RG8_UNORM))
+				throw love::Exception("Cannot upload font glyphs to texture atlas: unexpected format conversion.");
+#else
 			if (!(pixelFormat == PIXELFORMAT_RGBA8_UNORM && gd->getFormat() == PIXELFORMAT_LA8_UNORM))
 				throw love::Exception("Cannot upload font glyphs to texture atlas: unexpected format conversion.");
+#endif
 
 			const uint8 *src = (const uint8 *) gd->getData();
 

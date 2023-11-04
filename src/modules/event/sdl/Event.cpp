@@ -139,6 +139,11 @@ void Event::pump()
 			msg->release();
 		}
 	}
+#ifdef LOVE_EMSCRIPTEN
+	auto audio = Module::getInstance<audio::Audio>(Module::M_AUDIO);
+	if (audio)
+		audio->poolUpdate();
+#endif
 }
 
 Message *Event::wait()
