@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -106,13 +106,13 @@ love::graphics::Graphics *createInstance()
 }
 
 Graphics::Graphics()
-	: windowHasStencil(false)
+	: love::graphics::Graphics("love.graphics.opengl")
+	, windowHasStencil(false)
 	, mainVAO(0)
 	, internalBackbufferFBO(0)
 	, requestedBackbufferMSAA(0)
 	, bufferMapMemory(nullptr)
 	, bufferMapMemorySize(2 * 1024 * 1024)
-	, defaultBuffers()
 	, pixelFormatUsage()
 {
 	gl = OpenGL();
@@ -148,11 +148,6 @@ Graphics::~Graphics()
 	delete[] bufferMapMemory;
 }
 
-const char *Graphics::getName() const
-{
-	return "love.graphics.opengl";
-}
-
 love::graphics::StreamBuffer *Graphics::newStreamBuffer(BufferUsage type, size_t size)
 {
 	return CreateStreamBuffer(type, size);
@@ -163,14 +158,19 @@ love::graphics::Texture *Graphics::newTexture(const Texture::Settings &settings,
 	return new Texture(this, settings, data);
 }
 
+love::graphics::Texture *Graphics::newTextureView(love::graphics::Texture *base, const Texture::ViewSettings &viewsettings)
+{
+	return new Texture(this, base, viewsettings);
+}
+
 love::graphics::ShaderStage *Graphics::newShaderStageInternal(ShaderStageType stage, const std::string &cachekey, const std::string &source, bool gles)
 {
 	return new ShaderStage(this, stage, source, gles, cachekey);
 }
 
-love::graphics::Shader *Graphics::newShaderInternal(StrongRef<love::graphics::ShaderStage> stages[SHADERSTAGE_MAX_ENUM])
+love::graphics::Shader *Graphics::newShaderInternal(StrongRef<love::graphics::ShaderStage> stages[SHADERSTAGE_MAX_ENUM], const Shader::CompileOptions &options)
 {
-	return new Shader(stages);
+	return new Shader(stages, options);
 }
 
 love::graphics::Buffer *Graphics::newBuffer(const Buffer::Settings &settings, const std::vector<Buffer::DataDeclaration> &format, const void *data, size_t size, size_t arraylength)
@@ -188,24 +188,22 @@ love::graphics::GraphicsReadback *Graphics::newReadbackInternal(ReadbackMethod m
 	return new GraphicsReadback(this, method, texture, slice, mipmap, rect, dest, destx, desty);
 }
 
-Matrix4 Graphics::computeDeviceProjection(const Matrix4 &projection, bool rendertotexture) const
+void Graphics::backbufferChanged(int width, int height, int pixelwidth, int pixelheight, bool backbufferstencil, bool backbufferdepth, int msaa)
 {
-	uint32 flags = DEVICE_PROJECTION_DEFAULT;
+	bool changed = width != this->width || height != this->height
+		|| pixelwidth != this->pixelWidth || pixelheight != this->pixelHeight;
 
-	// The projection matrix is flipped compared to rendering to a texture, due
-	// to OpenGL considering (0,0) bottom-left instead of top-left.
-	if (!rendertotexture)
-		flags |= DEVICE_PROJECTION_FLIP_Y;
+	changed |= backbufferstencil != this->backbufferHasStencil || backbufferdepth != this->backbufferHasDepth;
+	changed |= msaa != this->requestedBackbufferMSAA;
 
-	return calculateDeviceProjection(projection, flags);
-}
-
-void Graphics::setViewportSize(int width, int height, int pixelwidth, int pixelheight)
-{
 	this->width = width;
 	this->height = height;
 	this->pixelWidth = pixelwidth;
 	this->pixelHeight = pixelheight;
+
+	this->backbufferHasStencil = backbufferstencil;
+	this->backbufferHasDepth = backbufferdepth;
+	this->requestedBackbufferMSAA = msaa;
 
 	if (!isRenderTargetActive())
 	{
@@ -220,22 +218,12 @@ void Graphics::setViewportSize(int width, int height, int pixelwidth, int pixelh
 		resetProjection();
 	}
 
-	updateBackbuffer(width, height, pixelwidth, pixelheight, requestedBackbufferMSAA);
-}
+	if (!changed)
+		return;
 
-void Graphics::updateBackbuffer(int width, int height, int /*pixelwidth*/, int pixelheight, int msaa)
-{
 	bool useinternalbackbuffer = false;
 	if (msaa > 1)
 		useinternalbackbuffer = true;
-
-	// Our internal backbuffer code needs glBlitFramebuffer.
-	if (!(GLAD_VERSION_3_0 || GLAD_ARB_framebuffer_object || GLAD_ES_VERSION_3_0
-		  || GLAD_EXT_framebuffer_blit || GLAD_ANGLE_framebuffer_blit || GLAD_NV_framebuffer_blit))
-	{
-		if (!(msaa > 1 && GLAD_APPLE_framebuffer_multisample))
-			useinternalbackbuffer = false;
-	}
 
 	GLuint prevFBO = gl.getFramebuffer(OpenGL::FRAMEBUFFER_ALL);
 	bool restoreFBO = prevFBO != getInternalBackbufferFBO();
@@ -253,8 +241,17 @@ void Graphics::updateBackbuffer(int width, int height, int /*pixelwidth*/, int p
 		settings.format = isGammaCorrect() ? PIXELFORMAT_RGBA8_sRGB : PIXELFORMAT_RGBA8_UNORM;
 		internalBackbuffer.set(newTexture(settings), Acquire::NORETAIN);
 
-		settings.format = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
-		internalBackbufferDepthStencil.set(newTexture(settings), Acquire::NORETAIN);
+		internalBackbufferDepthStencil.set(nullptr);
+		if (backbufferstencil || backbufferdepth)
+		{
+			if (backbufferstencil && backbufferdepth)
+				settings.format = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (backbufferstencil)
+				settings.format = PIXELFORMAT_STENCIL8;
+			else if (backbufferdepth)
+				settings.format = PIXELFORMAT_DEPTH24_UNORM;
+			internalBackbufferDepthStencil.set(newTexture(settings), Acquire::NORETAIN);
+		}
 
 		RenderTargets rts;
 		rts.colors.push_back(internalBackbuffer.get());
@@ -268,8 +265,6 @@ void Graphics::updateBackbuffer(int width, int height, int /*pixelwidth*/, int p
 		internalBackbufferDepthStencil.set(nullptr);
 		internalBackbufferFBO = 0;
 	}
-
-	requestedBackbufferMSAA = msaa;
 
 	if (restoreFBO)
 		gl.bindFramebuffer(OpenGL::FRAMEBUFFER_ALL, prevFBO);
@@ -300,14 +295,8 @@ GLuint Graphics::getSystemBackbufferFBO() const
 #endif
 }
 
-bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth, int pixelheight, bool windowhasstencil, int msaa)
+bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth, int pixelheight, bool backbufferstencil, bool backbufferdepth, int msaa)
 {
-	this->width = width;
-	this->height = height;
-
-	this->windowHasStencil = windowhasstencil;
-	this->requestedBackbufferMSAA = msaa;
-
 	// Okay, setup OpenGL.
 	gl.initContext();
 
@@ -353,8 +342,7 @@ bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth,
 		glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
 	// Set whether drawing converts input from linear -> sRGB colorspace.
-	if (!gl.bugs.brokenSRGB && (GLAD_VERSION_3_0 || GLAD_ARB_framebuffer_sRGB
-		|| GLAD_EXT_framebuffer_sRGB || GLAD_ES_VERSION_3_0))
+	if (!gl.bugs.brokenSRGB)
 	{
 		if (GLAD_VERSION_1_0 || GLAD_EXT_sRGB_write_control)
 			gl.setEnableState(OpenGL::ENABLE_FRAMEBUFFER_SRGB, isGammaCorrect());
@@ -364,7 +352,7 @@ bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth,
 
 	setDebug(isDebugEnabled());
 
-	setViewportSize(width, height, pixelwidth, pixelheight);
+	backbufferChanged(width, height, pixelwidth, pixelheight, backbufferstencil, backbufferdepth, msaa);
 
 	if (batchedDrawState.vb[0] == nullptr)
 	{
@@ -374,43 +362,6 @@ bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth,
 		batchedDrawState.vb[1] = CreateStreamBuffer(BUFFERUSAGE_VERTEX, 256  * 1024 * 1);
 		batchedDrawState.indexBuffer = CreateStreamBuffer(BUFFERUSAGE_INDEX, sizeof(uint16) * LOVE_UINT16_MAX);
 	}
-
-	// TODO: one buffer each for float, int, uint
-	if (capabilities.features[FEATURE_TEXEL_BUFFER] && defaultBuffers[BUFFERUSAGE_TEXEL].get() == nullptr)
-	{
-		Buffer::Settings settings(BUFFERUSAGEFLAG_TEXEL, BUFFERDATAUSAGE_STATIC);
-		std::vector<Buffer::DataDeclaration> format = {{"", DATAFORMAT_FLOAT_VEC4, 0}};
-
-		const float texel[] = {0.0f, 0.0f, 0.0f, 1.0f};
-
-		auto buffer = newBuffer(settings, format, texel, sizeof(texel), 1);
-		defaultBuffers[BUFFERUSAGE_TEXEL].set(buffer, Acquire::NORETAIN);
-	}
-
-	if (capabilities.features[FEATURE_GLSL4] && defaultBuffers[BUFFERUSAGE_SHADER_STORAGE].get() == nullptr)
-	{
-		Buffer::Settings settings(BUFFERUSAGEFLAG_SHADER_STORAGE, BUFFERDATAUSAGE_STATIC);
-		std::vector<Buffer::DataDeclaration> format = {{"", DATAFORMAT_FLOAT, 0}};
-
-		std::vector<float> data;
-		data.resize(Buffer::SHADER_STORAGE_BUFFER_MAX_STRIDE / 4);
-
-		auto buffer = newBuffer(settings, format, data.data(), data.size() * sizeof(float), data.size());
-		defaultBuffers[BUFFERUSAGE_SHADER_STORAGE].set(buffer, Acquire::NORETAIN);
-	}
-
-	// Load default resources before other Volatile.
-	for (int i = 0; i < BUFFERUSAGE_MAX_ENUM; i++)
-	{
-		if (defaultBuffers[i].get())
-			((Buffer *) defaultBuffers[i].get())->loadVolatile();
-	}
-
-	if (defaultBuffers[BUFFERUSAGE_TEXEL].get())
-		gl.setDefaultTexelBuffer((GLuint) defaultBuffers[BUFFERUSAGE_TEXEL]->getTexelBufferHandle());
-
-	if (defaultBuffers[BUFFERUSAGE_SHADER_STORAGE].get())
-		gl.setDefaultStorageBuffer((GLuint) defaultBuffers[BUFFERUSAGE_SHADER_STORAGE]->getHandle());
 
 	// Reload all volatile objects.
 	if (!Volatile::loadAll())
@@ -426,28 +377,31 @@ bool Graphics::setMode(void */*context*/, int width, int height, int pixelwidth,
 	{
 		auto stype = (Shader::StandardShader) i;
 
-		if (i == Shader::STANDARD_ARRAY && !capabilities.textureTypes[TEXTURE_2D_ARRAY])
-			continue;
-
-		// Apparently some intel GMA drivers on windows fail to compile shaders
-		// which use array textures despite claiming support for the extension.
-		try
+		if (!Shader::standardShaders[i])
 		{
-			if (!Shader::standardShaders[i])
+			std::vector<std::string> stages;
+			Shader::CompileOptions opts;
+			stages.push_back(Shader::getDefaultCode(stype, SHADERSTAGE_VERTEX));
+			stages.push_back(Shader::getDefaultCode(stype, SHADERSTAGE_PIXEL));
+
+			try
 			{
-				std::vector<std::string> stages;
-				Shader::CompileOptions opts;
-				stages.push_back(Shader::getDefaultCode(stype, SHADERSTAGE_VERTEX));
-				stages.push_back(Shader::getDefaultCode(stype, SHADERSTAGE_PIXEL));
 				Shader::standardShaders[i] = newShader(stages, opts);
 			}
-		}
-		catch (love::Exception &)
-		{
-			if (i == Shader::STANDARD_ARRAY)
-				capabilities.textureTypes[TEXTURE_2D_ARRAY] = false;
-			else
-				throw;
+			catch (love::Exception &)
+			{
+				// Attempted workaround for nvidia driver bug affecting old GPUs
+				// on Windows (e.g. the 300 series).
+				if (!isUsingNoTextureCubeShadowBiasHack())
+				{
+					usingNoTextureCubeShadowBiasHack = true;
+					Shader::standardShaders[i] = newShader(stages, opts);
+				}
+				else
+				{
+					throw;
+				}
+			}
 		}
 	}
 
@@ -736,24 +690,27 @@ void Graphics::drawQuads(int start, int count, const VertexAttributes &attribute
 
 static void APIENTRY debugCB(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei /*len*/, const GLchar *msg, const GLvoid* /*usr*/)
 {
+	if (severity == GL_DEBUG_SEVERITY_NOTIFICATION)
+		return;
+
 	// Human-readable strings for the debug info.
 	const char *sourceStr = OpenGL::debugSourceString(source);
 	const char *typeStr = OpenGL::debugTypeString(type);
 	const char *severityStr = OpenGL::debugSeverityString(severity);
 
-	const char *fmt = "OpenGL: %s [source=%s, type=%s, severity=%s, id=%d]\n";
-	printf(fmt, msg, sourceStr, typeStr, severityStr, id);
+	const char *fmt = "OpenGL: [source=%s, type=%s, severity=%s, id=%d]: %s\n";
+	printf(fmt, sourceStr, typeStr, severityStr, id, msg);
 }
 
 void Graphics::setDebug(bool enable)
 {
 	// Make sure debug output is supported. The AMD ext. is a bit different
 	// so we don't make use of it, since AMD drivers now support KHR_debug.
-	if (!(GLAD_VERSION_4_3 || GLAD_KHR_debug || GLAD_ARB_debug_output))
+	if (!(GLAD_VERSION_4_3 || GLAD_ES_VERSION_3_2 || GLAD_KHR_debug || GLAD_ARB_debug_output))
 		return;
 
 	// TODO: We don't support GL_KHR_debug in GLES yet.
-	if (GLAD_ES_VERSION_2_0)
+	if (GLAD_ES_VERSION_2_0 && !GLAD_ES_VERSION_3_2)
 		return;
 
 	// Ugly hack to reduce code duplication.
@@ -769,7 +726,7 @@ void Graphics::setDebug(bool enable)
 		glDebugMessageCallback(nullptr, nullptr);
 
 		// We can disable debug output entirely with KHR_debug.
-		if (GLAD_VERSION_4_3 || GLAD_KHR_debug)
+		if (GLAD_VERSION_4_3 || GLAD_ES_VERSION_3_2 || GLAD_KHR_debug)
 			glDisable(GL_DEBUG_OUTPUT);
 
 		return;
@@ -787,7 +744,7 @@ void Graphics::setDebug(bool enable)
 	glDebugMessageControl(GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR, GL_DONT_CARE, 0, 0, GL_FALSE);
 	glDebugMessageControl(GL_DEBUG_SOURCE_SHADER_COMPILER, GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR, GL_DONT_CARE, 0, 0, GL_FALSE);
 
-	if (GLAD_VERSION_4_3 || GLAD_KHR_debug)
+	if (GLAD_VERSION_4_3 || GLAD_ES_VERSION_3_2 || GLAD_KHR_debug)
 		glEnable(GL_DEBUG_OUTPUT);
 
 	::printf("OpenGL debug output enabled (LOVE_GRAPHICS_DEBUG=1)\n");
@@ -898,13 +855,6 @@ void Graphics::endPass(bool presenting)
 				glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, mask, GL_NEAREST);
 		}
 	}
-
-	// generateMipmaps can't be used for depth/stencil textures.
-	for (const auto &rt : rts.colors)
-	{
-		if (rt.texture->getMipmapsMode() == Texture::MIPMAPS_AUTO && rt.mipmap == 0)
-			rt.texture->generateMipmaps();
-	}
 }
 
 void Graphics::clear(OptionalColorD c, OptionalInt stencil, OptionalDouble depth)
@@ -991,7 +941,6 @@ void Graphics::clear(const std::vector<OptionalColorD> &colors, OptionalInt sten
 
 	flushBatchedDraws();
 
-	bool drawbuffersmodified = false;
 	ncolors = std::min(ncolors, ncolorRTs);
 
 	for (int i = 0; i < ncolors; i++)
@@ -1005,49 +954,23 @@ void Graphics::clear(const std::vector<OptionalColorD> &colors, OptionalInt sten
 
 		ColorD c = colors[i].value;
 
-		if (GLAD_ES_VERSION_3_0 || GLAD_VERSION_3_0)
+		if (datatype == PIXELFORMATTYPE_SINT)
 		{
-			if (datatype == PIXELFORMATTYPE_SINT)
-			{
-				const GLint carray[] = {(GLint)c.r, (GLint)c.g, (GLint)c.b, (GLint)c.a};
-				glClearBufferiv(GL_COLOR, i, carray);
-			}
-			else if (datatype == PIXELFORMATTYPE_UINT)
-			{
-				const GLuint carray[] = {(GLuint)c.r, (GLuint)c.g, (GLuint)c.b, (GLuint)c.a};
-				glClearBufferuiv(GL_COLOR, i, carray);
-			}
-			else
-			{
-				Colorf cf((float)c.r, (float)c.g, (float)c.b, (float)c.a);
-				gammaCorrectColor(cf);
-				const GLfloat carray[] = {cf.r, cf.g, cf.b, cf.a};
-				glClearBufferfv(GL_COLOR, i, carray);
-			}
+			const GLint carray[] = {(GLint)c.r, (GLint)c.g, (GLint)c.b, (GLint)c.a};
+			glClearBufferiv(GL_COLOR, i, carray);
+		}
+		else if (datatype == PIXELFORMATTYPE_UINT)
+		{
+			const GLuint carray[] = {(GLuint)c.r, (GLuint)c.g, (GLuint)c.b, (GLuint)c.a};
+			glClearBufferuiv(GL_COLOR, i, carray);
 		}
 		else
 		{
 			Colorf cf((float)c.r, (float)c.g, (float)c.b, (float)c.a);
 			gammaCorrectColor(cf);
-
-			glDrawBuffer(GL_COLOR_ATTACHMENT0 + i);
-			glClearColor(cf.r, cf.g, cf.b, cf.a);
-			glClear(GL_COLOR_BUFFER_BIT);
-
-			drawbuffersmodified = true;
+			const GLfloat carray[] = {cf.r, cf.g, cf.b, cf.a};
+			glClearBufferfv(GL_COLOR, i, carray);
 		}
-	}
-
-	// Revert to the expected draw buffers once we're done, if glClearBuffer
-	// wasn't supported.
-	if (drawbuffersmodified)
-	{
-		GLenum bufs[MAX_COLOR_RENDER_TARGETS];
-
-		for (int i = 0; i < ncolorRTs; i++)
-			bufs[i] = GL_COLOR_ATTACHMENT0 + i;
-
-		glDrawBuffers(ncolorRTs, bufs);
 	}
 
 	GLbitfield flags = 0;
@@ -1100,7 +1023,7 @@ void Graphics::discard(OpenGL::FramebufferTarget target, const std::vector<bool>
 	attachments.reserve(colorbuffers.size());
 
 	// glDiscardFramebuffer uses different attachment enums for the default FBO.
-	if (!isRenderTargetActive() && getInternalBackbufferFBO() == 0)
+	if (gl.getFramebuffer(target) == 0)
 	{
 		if (colorbuffers.size() > 0 && colorbuffers[0])
 			attachments.push_back(GL_COLOR);
@@ -1189,7 +1112,7 @@ GLuint Graphics::bindCachedFBO(const RenderTargets &targets)
 		auto attachRT = [&](const RenderTarget &rt)
 		{
 			bool renderbuffer = msaa > 1 || !rt.texture->isReadable();
-			OpenGL::TextureFormat fmt = OpenGL::convertPixelFormat(rt.texture->getPixelFormat(), renderbuffer);
+			OpenGL::TextureFormat fmt = OpenGL::convertPixelFormat(rt.texture->getPixelFormat());
 
 			if (fmt.framebufferAttachments[0] == GL_COLOR_ATTACHMENT0)
 			{
@@ -1227,14 +1150,10 @@ GLuint Graphics::bindCachedFBO(const RenderTargets &targets)
 
 		if (ncolortargets > 1)
 			glDrawBuffers(ncolortargets, drawbuffers);
-		else if (ncolortargets == 0 && hasDS && (GLAD_ES_VERSION_3_0 || !GLAD_ES_VERSION_2_0))
+		else if (ncolortargets == 0 && hasDS)
 		{
-			// glDrawBuffers is an ext in GL2. glDrawBuffer doesn't exist in ES3.
 			GLenum none = GL_NONE;
-			if (GLAD_ES_VERSION_3_0)
-				glDrawBuffers(1, &none);
-			else
-				glDrawBuffer(GL_NONE);
+			glDrawBuffers(1, &none);
 			glReadBuffer(GL_NONE);
 		}
 
@@ -1434,30 +1353,19 @@ void Graphics::setScissor()
 		gl.setEnableState(OpenGL::ENABLE_SCISSOR_TEST, false);
 }
 
-void Graphics::setStencilMode(StencilAction action, CompareMode compare, int value, uint32 readmask, uint32 writemask)
+void Graphics::setStencilState(const StencilState &s)
 {
-	DisplayState &state = states.back();
-
-	if (action != STENCIL_KEEP)
-	{
-		const auto &rts = state.renderTargets;
-		love::graphics::Texture *dstexture = rts.depthStencil.texture.get();
-
-		if (!isRenderTargetActive() && !windowHasStencil)
-			throw love::Exception("The window must have stenciling enabled to draw to the main screen's stencil buffer.");
-		else if (isRenderTargetActive() && (rts.temporaryRTFlags & TEMPORARY_RT_STENCIL) == 0 && (dstexture == nullptr || !isPixelFormatStencil(dstexture->getPixelFormat())))
-			throw love::Exception("Drawing to the stencil buffer with a render target active requires either stencil=true or a custom stencil-type texture to be used, in setRenderTarget.");
-	}
+	validateStencilState(s);
 
 	flushBatchedDraws();
 
-	bool enablestencil = action != STENCIL_KEEP || compare != COMPARE_ALWAYS;
+	bool enablestencil = s.action != STENCIL_KEEP || s.compare != COMPARE_ALWAYS;
 	if (enablestencil != gl.isStateEnabled(OpenGL::ENABLE_STENCIL_TEST))
 		gl.setEnableState(OpenGL::ENABLE_STENCIL_TEST, enablestencil);
 
 	GLenum glaction = GL_KEEP;
 
-	switch (action)
+	switch (s.action)
 	{
 	case STENCIL_KEEP:
 		glaction = GL_KEEP;
@@ -1493,29 +1401,27 @@ void Graphics::setStencilMode(StencilAction action, CompareMode compare, int val
 	 * example, if the compare function is GREATER then the stencil test will
 	 * pass if the reference value is greater than the value in the stencil
 	 * buffer. With our API it's more intuitive to assume that
-	 * setStencilMode(STENCIL_KEEP, COMPARE_GREATER, 4) will make it pass if the
+	 * setStencilState(STENCIL_KEEP, COMPARE_GREATER, 4) will make it pass if the
 	 * stencil buffer has a value greater than 4.
 	 **/
-	GLenum glcompare = OpenGL::getGLCompareMode(getReversedCompareMode(compare));
+	GLenum glcompare = OpenGL::getGLCompareMode(getReversedCompareMode(s.compare));
 
 	if (enablestencil)
 	{
-		glStencilFunc(glcompare, value, readmask);
+		glStencilFunc(glcompare, s.value, s.readMask);
 		glStencilOp(GL_KEEP, GL_KEEP, glaction);
 	}
 
-	if (writemask != gl.getStencilWriteMask())
-		gl.setStencilWriteMask(writemask);
+	if (s.writeMask != gl.getStencilWriteMask())
+		gl.setStencilWriteMask(s.writeMask);
 
-	state.stencil.action = action;
-	state.stencil.compare = compare;
-	state.stencil.value = value;
-	state.stencil.readMask = readmask;
-	state.stencil.writeMask = writemask;
+	states.back().stencil = s;
 }
 
 void Graphics::setDepthMode(CompareMode compare, bool write)
 {
+	validateDepthState(write);
+
 	DisplayState &state = states.back();
 
 	if (state.depthTest != compare || state.depthWrite != write)
@@ -1577,13 +1483,6 @@ void Graphics::setBlendState(const BlendState &blend)
 {
 	if (!(blend == states.back().blend))
 		flushBatchedDraws();
-
-	if (blend.operationRGB == BLENDOP_MAX || blend.operationA == BLENDOP_MAX
-		|| blend.operationRGB == BLENDOP_MIN || blend.operationA == BLENDOP_MIN)
-	{
-		if (!capabilities.features[FEATURE_BLEND_MINMAX])
-			throw love::Exception("The 'min' and 'max' blend operations are not supported on this system.");
-	}
 
 	if (blend.enable != gl.isStateEnabled(OpenGL::ENABLE_BLEND))
 		gl.setEnableState(OpenGL::ENABLE_BLEND, blend.enable);
@@ -1686,26 +1585,20 @@ void Graphics::getAPIStats(int &shaderswitches) const
 
 void Graphics::initCapabilities()
 {
-	capabilities.features[FEATURE_MULTI_RENDER_TARGET_FORMATS] = gl.isMultiFormatMRTSupported();
+	capabilities.features[FEATURE_MULTI_RENDER_TARGET_FORMATS] = true;
 	capabilities.features[FEATURE_CLAMP_ZERO] = gl.isClampZeroOneTextureWrapSupported();
 	capabilities.features[FEATURE_CLAMP_ONE] = gl.isClampZeroOneTextureWrapSupported();
-	capabilities.features[FEATURE_BLEND_MINMAX] = GLAD_VERSION_1_4 || GLAD_ES_VERSION_3_0 || GLAD_EXT_blend_minmax;
-	capabilities.features[FEATURE_LIGHTEN] = capabilities.features[FEATURE_BLEND_MINMAX];
-	capabilities.features[FEATURE_FULL_NPOT] = GLAD_VERSION_2_0 || GLAD_ES_VERSION_3_0 || GLAD_OES_texture_npot;
-	capabilities.features[FEATURE_PIXEL_SHADER_HIGHP] = gl.isPixelShaderHighpSupported();
-	capabilities.features[FEATURE_SHADER_DERIVATIVES] = GLAD_VERSION_2_0 || GLAD_ES_VERSION_3_0 || GLAD_OES_standard_derivatives;
-	capabilities.features[FEATURE_GLSL3] = GLAD_ES_VERSION_3_0 || gl.isCoreProfile();
+	capabilities.features[FEATURE_LIGHTEN] = true;
+	capabilities.features[FEATURE_FULL_NPOT] = true;
+	capabilities.features[FEATURE_PIXEL_SHADER_HIGHP] = true;
+	capabilities.features[FEATURE_SHADER_DERIVATIVES] = true;
+	capabilities.features[FEATURE_GLSL3] = true;
 	capabilities.features[FEATURE_GLSL4] = GLAD_ES_VERSION_3_1 || (gl.isCoreProfile() && GLAD_VERSION_4_3);
-	capabilities.features[FEATURE_INSTANCING] = gl.isInstancingSupported();
+	capabilities.features[FEATURE_INSTANCING] = true;
 	capabilities.features[FEATURE_TEXEL_BUFFER] = gl.isBufferUsageSupported(BUFFERUSAGE_TEXEL);
-	capabilities.features[FEATURE_INDEX_BUFFER_32BIT] = GLAD_VERSION_1_1 || GLAD_ES_VERSION_3_0 || GLAD_OES_element_index_uint;
-	capabilities.features[FEATURE_COPY_BUFFER] = gl.isCopyBufferSupported();
-	capabilities.features[FEATURE_COPY_BUFFER_TO_TEXTURE] = gl.isCopyBufferToTextureSupported();
 	capabilities.features[FEATURE_COPY_TEXTURE_TO_BUFFER] = gl.isCopyTextureToBufferSupported();
-	capabilities.features[FEATURE_COPY_RENDER_TARGET_TO_BUFFER] = gl.isCopyRenderTargetToBufferSupported();
-	capabilities.features[FEATURE_MIPMAP_RANGE] = GLAD_VERSION_1_2 || GLAD_ES_VERSION_3_0;
 	capabilities.features[FEATURE_INDIRECT_DRAW] = capabilities.features[FEATURE_GLSL4];
-	static_assert(FEATURE_MAX_ENUM == 19, "Graphics::initCapabilities must be updated when adding a new graphics feature!");
+	static_assert(FEATURE_MAX_ENUM == 13, "Graphics::initCapabilities must be updated when adding a new graphics feature!");
 
 	capabilities.limits[LIMIT_POINT_SIZE] = gl.getMaxPointSize();
 	capabilities.limits[LIMIT_TEXTURE_SIZE] = gl.getMax2DTextureSize();
@@ -1723,7 +1616,7 @@ void Graphics::initCapabilities()
 	static_assert(LIMIT_MAX_ENUM == 13, "Graphics::initCapabilities must be updated when adding a new system limit!");
 
 	for (int i = 0; i < TEXTURE_MAX_ENUM; i++)
-		capabilities.textureTypes[i] = gl.isTextureTypeSupported((TextureType) i);
+		capabilities.textureTypes[i] = true;
 
 	for (int i = 0; i < PIXELFORMAT_MAX_ENUM; i++)
 	{
@@ -1731,6 +1624,17 @@ void Graphics::initCapabilities()
 		pixelFormatUsage[i][0] = computePixelFormatUsage(format, false);
 		pixelFormatUsage[i][1] = computePixelFormatUsage(format, true);
 	}
+
+#ifdef LOVE_ANDROID
+	// This can't be done in initContext with the rest of the bug checks because
+	// isPixelFormatSupported relies on state initialized here / after init.
+	if (GLAD_ES_VERSION_3_0 && !isPixelFormatSupported(PIXELFORMAT_R8_UNORM, PIXELFORMATUSAGEFLAGS_SAMPLE | PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+	{
+		gl.bugs.brokenR8PixelFormat = true;
+		pixelFormatUsage[PIXELFORMAT_R8_UNORM][0] = computePixelFormatUsage(PIXELFORMAT_R8_UNORM, false);
+		pixelFormatUsage[PIXELFORMAT_R8_UNORM][1] = computePixelFormatUsage(PIXELFORMAT_R8_UNORM, true);
+	}
+#endif
 }
 
 uint32 Graphics::computePixelFormatUsage(PixelFormat format, bool readable)
@@ -1754,7 +1658,7 @@ uint32 Graphics::computePixelFormatUsage(PixelFormat format, bool readable)
 		GLuint texture = 0;
 		GLuint renderbuffer = 0;
 
-		OpenGL::TextureFormat fmt = OpenGL::convertPixelFormat(format, !readable);
+		OpenGL::TextureFormat fmt = OpenGL::convertPixelFormat(format);
 
 		GLuint current_fbo = gl.getFramebuffer(OpenGL::FRAMEBUFFER_ALL);
 
@@ -1765,7 +1669,10 @@ uint32 Graphics::computePixelFormatUsage(PixelFormat format, bool readable)
 		// Make sure at least something is bound to a color attachment. I believe
 		// this is required on ES2 but I'm not positive.
 		if (isPixelFormatDepthStencil(format))
-			gl.framebufferTexture(GL_COLOR_ATTACHMENT0, TEXTURE_2D, gl.getDefaultTexture(TEXTURE_2D, DATA_BASETYPE_FLOAT), 0, 0, 0);
+		{
+			love::graphics::Texture *tex = getDefaultTexture(TEXTURE_2D, DATA_BASETYPE_FLOAT, false);
+			gl.framebufferTexture(GL_COLOR_ATTACHMENT0, TEXTURE_2D, (GLuint) tex->getHandle(), 0, 0, 0);
+		}
 
 		if (readable)
 		{

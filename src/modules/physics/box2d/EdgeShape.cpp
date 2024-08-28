@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -49,6 +49,7 @@ void EdgeShape::setNextVertex(float x, float y)
 	b2EdgeShape *e = (b2EdgeShape *)shape;
 	b2Vec2 v(x, y);
 	e->m_vertex3 = Physics::scaleDown(v);
+	e->m_oneSided = true;
 }
 
 b2Vec2 EdgeShape::getNextVertex() const
@@ -64,6 +65,7 @@ void EdgeShape::setPreviousVertex(float x, float y)
 	b2EdgeShape *e = (b2EdgeShape *)shape;
 	b2Vec2 v(x, y);
 	e->m_vertex0 = Physics::scaleDown(v);
+	e->m_oneSided = true;
 }
 
 b2Vec2 EdgeShape::getPreviousVertex() const

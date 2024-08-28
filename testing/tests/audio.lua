@@ -299,6 +299,20 @@ love.test.audio.getOrientation = function(test)
 end
 
 
+-- love.audio.getPlaybackDevice
+love.test.audio.getPlaybackDevice = function(test)
+  test:assertNotNil(love.audio.getPlaybackDevice)
+  test:assertNotNil(love.audio.getPlaybackDevice())
+end
+
+
+-- love.audio.getPlaybackDevices
+love.test.audio.getPlaybackDevices = function(test)
+  test:assertNotNil(love.audio.getPlaybackDevices)
+  test:assertGreaterEqual(0, #love.audio.getPlaybackDevices(), 'check table')
+end
+
+
 -- love.audio.getPosition
 -- @NOTE is there an expected default listener pos?
 love.test.audio.getPosition = function(test)
@@ -439,6 +453,44 @@ love.test.audio.setOrientation = function(test)
   test:assertEquals(4, ux, 'check ux orientation')
   test:assertEquals(5, uy, 'check uy orientation')
   test:assertEquals(6, uz, 'check uz orientation')
+end
+
+
+-- love.audio.setPlaybackDevice
+love.test.audio.setPlaybackDevice = function(test)
+  -- check method
+  test:assertNotNil(love.audio.setPlaybackDevice)
+
+  -- check blank string name
+  test:assertTrue(love.audio.setPlaybackDevice(''), 'check blank device is fine')
+
+  -- check invalid name
+  test:assertFalse(love.audio.setPlaybackDevice('loveFM'), 'check invalid device fails')
+
+  -- check setting already set
+  test:assertTrue(love.audio.setPlaybackDevice(love.audio.getPlaybackDevice()), 'check existing device is fine')
+  
+  -- if other devices to play with lets set a different one
+  local devices = love.audio.getPlaybackDevices()
+  if #devices > 1 then
+    local another = ''
+    local current = love.audio.getPlaybackDevice()
+    for a=1,#devices do
+      if devices[a] ~= current then
+        another = devices[a]
+        break
+      end
+    end
+    if another ~= '' then
+      -- check setting new device
+      local success4, msg4 = love.audio.setPlaybackDevice(another)
+      test:assertTrue(success4, 'check setting different device')
+      -- check resetting to default
+      local success5, msg5 = love.audio.setPlaybackDevice()
+      test:assertTrue(success5, 'check resetting')
+      test:assertEquals(current, love.audio.getPlaybackDevice())
+    end
+  end
 end
 
 

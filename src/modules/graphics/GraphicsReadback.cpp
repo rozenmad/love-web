@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -33,16 +33,11 @@ namespace graphics
 
 love::Type GraphicsReadback::type("GraphicsReadback", &Object::type);
 
-GraphicsReadback::GraphicsReadback(Graphics *gfx, ReadbackMethod method, Buffer *buffer, size_t offset, size_t size, love::data::ByteData *dest, size_t destoffset)
+GraphicsReadback::GraphicsReadback(Graphics */*gfx*/, ReadbackMethod method, Buffer *buffer, size_t offset, size_t size, love::data::ByteData *dest, size_t destoffset)
 	: dataType(DATA_BUFFER)
 	, method(method)
 	, bufferData(dest)
 {
-	const auto &caps = gfx->getCapabilities();
-
-	if (!caps.features[Graphics::FEATURE_COPY_BUFFER])
-		throw love::Exception("readbackBuffer is not supported on this system (buffer copy support is required).");
-
 	if (offset + size > buffer->getSize())
 		throw love::Exception("Invalid offset or size for the given Buffer.");
 
@@ -94,9 +89,7 @@ GraphicsReadback::GraphicsReadback(Graphics *gfx, ReadbackMethod method, Texture
 
 	if (method == READBACK_ASYNC)
 	{
-		if (isRT && !caps.features[Graphics::FEATURE_COPY_RENDER_TARGET_TO_BUFFER])
-			throw love::Exception("readbackTextureAsync is not supported on this system.");
-		else if (!isRT && !caps.features[Graphics::FEATURE_COPY_TEXTURE_TO_BUFFER])
+		if (!isRT && !caps.features[Graphics::FEATURE_COPY_TEXTURE_TO_BUFFER])
 			throw love::Exception("readbackTextureAsync with a non-render-target texture is not supported on this system.");
 	}
 	else
@@ -107,7 +100,7 @@ GraphicsReadback::GraphicsReadback(Graphics *gfx, ReadbackMethod method, Texture
 
 	if (dest != nullptr)
 	{
-		if (dest->getFormat() != textureFormat)
+		if (getLinearPixelFormat(dest->getFormat()) != textureFormat)
 			throw love::Exception("Destination ImageData pixel format must match the source Texture's format.");
 
 		if (destx < 0 || desty < 0)
@@ -192,6 +185,7 @@ GraphicsReadback::Status GraphicsReadback::readbackBuffer(Buffer *buffer, size_t
 
 		if (imageData.get())
 		{
+			// Always lock the mutex since the user can't know when to do it.
 			love::thread::Lock lock(imageData->getMutex());
 
 			if (imageData->getWidth() != rect.w)

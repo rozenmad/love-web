@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -48,6 +48,9 @@ class Buffer : public love::Object, public Resource
 public:
 
 	static love::Type type;
+
+	static int bufferCount;
+	static int64 totalGraphicsMemory;
 
 	static const size_t SHADER_STORAGE_BUFFER_MAX_STRIDE = 2048;
 
@@ -138,7 +141,7 @@ public:
 	/**
 	 * Reset the given portion of this buffer's data to 0.
 	 */
-	virtual void clear(size_t offset, size_t size) = 0;
+	void clear(size_t offset, size_t size);
 
 	/**
 	 * Copy a portion of this Buffer's data to another buffer, using the GPU.
@@ -174,6 +177,8 @@ public:
 	}; // Mapper
 
 protected:
+
+	virtual void clearInternal(size_t offset, size_t size) = 0;
 
 	std::vector<DataMember> dataMembers;
 	size_t arrayLength;

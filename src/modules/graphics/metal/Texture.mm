@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -43,10 +43,6 @@ static MTLTextureType getMTLTextureType(TextureType type, int msaa)
 
 Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, const Settings &settings, const Slices *data)
 	: love::graphics::Texture(gfxbase, settings, data)
-	, texture(nil)
-	, msaaTexture(nil)
-	, sampler(nil)
-	, actualMSAASamples(1)
 { @autoreleasepool {
 	auto gfx = (Graphics *) gfxbase;
 
@@ -80,6 +76,15 @@ Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, const 
 		desc.usage |= MTLTextureUsageRenderTarget;
 	if (computeWrite)
 		desc.usage |= MTLTextureUsageShaderWrite;
+
+	for (PixelFormat viewformat : viewFormats)
+	{
+		if (getLinearPixelFormat(viewformat) != getLinearPixelFormat(format))
+		{
+			desc.usage |= MTLTextureUsagePixelFormatView;
+			break;
+		}
+	}
 
 	texture = [device newTextureWithDescriptor:desc];
 
@@ -149,7 +154,7 @@ Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, const 
 					emptydata.resize(getPixelFormatSliceSize(format, w, h));
 
 				Rect r = {0, 0, getPixelWidth(mip), getPixelHeight(mip)};
-				uploadByteData(format, emptydata.data(), emptydata.size(), mip, slice, r);
+				uploadByteData(emptydata.data(), emptydata.size(), mip, slice, r);
 			}
 			else if (isRenderTarget())
 			{
@@ -204,6 +209,8 @@ Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, const 
 		}
 	}
 
+	updateGraphicsMemorySize(true);
+
 	// Non-readable textures can't have mipmaps (enforced in the base class),
 	// so generateMipmaps here is fine - when they aren't already initialized.
 	if (shouldgeneratemips)
@@ -212,6 +219,41 @@ Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, const 
 	setSamplerState(samplerState);
 }}
 
+Texture::Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, love::graphics::Texture *base, const Texture::ViewSettings &viewsettings)
+	: love::graphics::Texture(gfx, base, viewsettings)
+{
+	id<MTLTexture> basetex = ((Texture *) base)->texture;
+	auto formatdesc = Metal::convertPixelFormat(device, format);
+	int slices = texType == TEXTURE_CUBE ? 6 : getLayerCount();
+
+	if (formatdesc.swizzled)
+	{
+		if (@available(macOS 10.15, iOS 13, *))
+		{
+			texture = [basetex newTextureViewWithPixelFormat:formatdesc.format
+												 textureType:getMTLTextureType(texType, 1)
+													  levels:NSMakeRange(parentView.startMipmap, mipmapCount)
+													  slices:NSMakeRange(parentView.startLayer, slices)
+													 swizzle:formatdesc.swizzle];
+		}
+	}
+	else
+	{
+		texture = [basetex newTextureViewWithPixelFormat:formatdesc.format
+											 textureType:getMTLTextureType(texType, 1)
+												  levels:NSMakeRange(parentView.startMipmap, mipmapCount)
+												  slices:NSMakeRange(parentView.startLayer, slices)];
+	}
+
+	if (texture == nil)
+		throw love::Exception("Could not create Metal texture view.");
+
+	if (!debugName.empty())
+		texture.label = @(debugName.c_str());
+
+	setSamplerState(samplerState);
+}
+
 Texture::~Texture()
 { @autoreleasepool {
 	texture = nil;
@@ -219,14 +261,12 @@ Texture::~Texture()
 	sampler = nil;
 }}
 
-void Texture::uploadByteData(PixelFormat pixelformat, const void *data, size_t size, int level, int slice, const Rect &r)
+void Texture::uploadByteData(const void *data, size_t size, int level, int slice, const Rect &r)
 { @autoreleasepool {
 	auto gfx = Graphics::getInstance();
 	id<MTLBuffer> buffer = [gfx->device newBufferWithBytes:data
 													length:size
 												   options:MTLResourceStorageModeShared];
-
-	memcpy(buffer.contents, data, size);
 
 	id<MTLBlitCommandEncoder> encoder = gfx->useBlitEncoder();
 
@@ -239,7 +279,7 @@ void Texture::uploadByteData(PixelFormat pixelformat, const void *data, size_t s
 
 	MTLBlitOption options = MTLBlitOptionNone;
 
-	switch (pixelformat)
+	switch (format)
 	{
 	case PIXELFORMAT_PVR1_RGB2_UNORM:
 	case PIXELFORMAT_PVR1_RGB4_UNORM:
@@ -339,10 +379,11 @@ void Texture::copyToBuffer(love::graphics::Buffer *dest, int slice, int mipmap, 
 
 void Texture::setSamplerState(const SamplerState &s)
 { @autoreleasepool {
-	// Base class does common validation and assigns samplerState.
-	love::graphics::Texture::setSamplerState(s);
+	if (s.depthSampleMode.hasValue && !Graphics::getInstance()->isDepthCompareSamplerSupported())
+		throw love::Exception("Depth comparison sampling in shaders is not supported on this system.");
 
-	sampler = Graphics::getInstance()->getCachedSampler(s);
+	samplerState = validateSamplerState(s);
+	sampler = Graphics::getInstance()->getCachedSampler(samplerState);
 }}
 
 } // metal

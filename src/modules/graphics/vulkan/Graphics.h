@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -37,7 +37,7 @@
 #include <memory>
 #include <functional>
 #include <set>
-
+#include <tuple>
 
 namespace love
 {
@@ -170,46 +170,6 @@ struct OptionalDeviceExtensions
 	bool spirv14 = false;
 };
 
-struct GraphicsPipelineConfiguration
-{
-	VkRenderPass renderPass;
-	VertexAttributes vertexAttributes;
-	Shader *shader = nullptr;
-	bool wireFrame;
-	BlendState blendState;
-	ColorChannelMask colorChannelMask;
-	VkSampleCountFlagBits msaaSamples;
-	uint32_t numColorAttachments;
-	PrimitiveType primitiveType;
-
-	struct DynamicState
-	{
-		CullMode cullmode = CULL_NONE;
-		Winding winding = WINDING_MAX_ENUM;
-		StencilAction stencilAction = STENCIL_MAX_ENUM;
-		CompareMode stencilCompare = COMPARE_MAX_ENUM;
-		DepthState depthState{};
-	} dynamicState;
-
-	GraphicsPipelineConfiguration()
-	{
-		memset(this, 0, sizeof(GraphicsPipelineConfiguration));
-	}
-
-	bool operator==(const GraphicsPipelineConfiguration &other) const
-	{
-		return memcmp(this, &other, sizeof(GraphicsPipelineConfiguration)) == 0;
-	}
-};
-
-struct GraphicsPipelineConfigurationHasher
-{
-	size_t operator() (const GraphicsPipelineConfiguration &configuration) const
-	{
-		return XXH32(&configuration, sizeof(GraphicsPipelineConfiguration), 0);
-	}
-};
-
 struct QueueFamilyIndices
 {
 	Optional<uint32_t> graphicsFamily;
@@ -236,8 +196,9 @@ struct RenderpassState
 	RenderPassConfiguration renderPassConfiguration{};
 	FramebufferConfiguration framebufferConfiguration{};
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	std::vector<VkImage> transitionImages;
+	std::vector<std::tuple<VkImage, PixelFormat, VkImageLayout, VkImageLayout, int, int>> transitionImages;
 	uint32_t numColorAttachments = 0;
+	uint64 packedColorAttachmentFormats = 0;
 	float width = 0.0f;
 	float height = 0.0f;
 	VkSampleCountFlagBits msaa = VK_SAMPLE_COUNT_1_BIT;
@@ -247,16 +208,6 @@ struct RenderpassState
 	OptionalColorD mainWindowClearColorValue;
 	OptionalDouble mainWindowClearDepthValue;
 	OptionalInt mainWindowClearStencilValue;
-};
-
-struct ScreenshotReadbackBuffer
-{
-	VkBuffer buffer;
-	VmaAllocation allocation;
-	VmaAllocationInfo allocationInfo;
-
-	VkImage image;
-	VmaAllocation imageAllocation;
 };
 
 enum SubmitMode
@@ -274,18 +225,17 @@ public:
 	~Graphics();
 
 	// implementation for virtual functions
-	const char *getName() const override;
 	love::graphics::Texture *newTexture(const love::graphics::Texture::Settings &settings, const love::graphics::Texture::Slices *data) override;
+	love::graphics::Texture *newTextureView(love::graphics::Texture *base, const Texture::ViewSettings &viewsettings) override;
 	love::graphics::Buffer *newBuffer(const love::graphics::Buffer::Settings &settings, const std::vector<love::graphics::Buffer::DataDeclaration>& format, const void *data, size_t size, size_t arraylength) override;
 	graphics::GraphicsReadback *newReadbackInternal(ReadbackMethod method, love::graphics::Buffer *buffer, size_t offset, size_t size, data::ByteData *dest, size_t destoffset) override;
 	graphics::GraphicsReadback *newReadbackInternal(ReadbackMethod method, love::graphics::Texture *texture, int slice, int mipmap, const Rect &rect, image::ImageData *dest, int destx, int desty) override;
 	void clear(OptionalColorD color, OptionalInt stencil, OptionalDouble depth) override;
 	void clear(const std::vector<OptionalColorD> &colors, OptionalInt stencil, OptionalDouble depth) override;
-	Matrix4 computeDeviceProjection(const Matrix4 &projection, bool rendertotexture) const override;
 	void discard(const std::vector<bool>& colorbuffers, bool depthstencil) override;
 	void present(void *screenshotCallbackdata) override;
-	void setViewportSize(int width, int height, int pixelwidth, int pixelheight) override;
-	bool setMode(void *context, int width, int height, int pixelwidth, int pixelheight, bool windowhasstencil, int msaa) override;
+	void backbufferChanged(int width, int height, int pixelwidth, int pixelheight, bool backbufferstencil, bool backbufferdepth, int msaa) override;
+	bool setMode(void *context, int width, int height, int pixelwidth, int pixelheight, bool backbufferstencil, bool backbufferdepth, int msaa) override;
 	void unSetMode() override;
 	void setActive(bool active) override;
 	int getRequestedBackbufferMSAA() const override;
@@ -293,7 +243,7 @@ public:
 	void setColor(Colorf c) override;
 	void setScissor(const Rect &rect) override;
 	void setScissor() override;
-	void setStencilMode(StencilAction action, CompareMode compare, int value, love::uint32 readmask, love::uint32 writemask) override;
+	void setStencilState(const StencilState &s) override;
 	void setDepthMode(CompareMode compare, bool write) override;
 	void setFrontFaceWinding(Winding winding) override;
 	void setColorMask(ColorChannelMask mask) override;
@@ -316,7 +266,6 @@ public:
 	void queueCleanUp(std::function<void()> cleanUp);
 	void addReadbackCallback(std::function<void()> callback);
 	void submitGpuCommands(SubmitMode, void *screenshotCallbackData = nullptr);
-	const VkDeviceSize getMinUniformBufferOffsetAlignment() const;
 	VkSampler getCachedSampler(const SamplerState &sampler);
 	void setComputeShader(Shader *computeShader);
 	graphics::Shader::BuiltinUniformData getCurrentBuiltinUniformData();
@@ -325,10 +274,15 @@ public:
 	VkSampleCountFlagBits getMsaaCount(int requestedMsaa) const;
 	void setVsync(int vsync);
 	int getVsync() const;
+	void mapLocalUniformData(void *data, size_t size, VkDescriptorBufferInfo &bufferInfo);
+
+	VkPipeline createGraphicsPipeline(Shader *shader, const GraphicsPipelineConfiguration &configuration);
+
+	uint32 getDeviceApiVersion() const { return deviceApiVersion; }
 
 protected:
 	graphics::ShaderStage *newShaderStageInternal(ShaderStageType stage, const std::string &cachekey, const std::string &source, bool gles) override;
-	graphics::Shader *newShaderInternal(StrongRef<love::graphics::ShaderStage> stages[SHADERSTAGE_MAX_ENUM]) override;
+	graphics::Shader *newShaderInternal(StrongRef<love::graphics::ShaderStage> stages[SHADERSTAGE_MAX_ENUM], const Shader::CompileOptions &options) override;
 	graphics::StreamBuffer *newStreamBuffer(BufferUsage type, size_t size) override;
 	bool dispatch(love::graphics::Shader *shader, int x, int y, int z) override;
 	bool dispatch(love::graphics::Shader *shader, love::graphics::Buffer *indirectargs, size_t argsoffset) override;
@@ -353,13 +307,11 @@ private:
 	VkCompositeAlphaFlagBitsKHR chooseCompositeAlpha(const VkSurfaceCapabilitiesKHR &capabilities);
 	void createSwapChain();
 	void createImageViews();
-	void createScreenshotCallbackBuffers();
 	VkFramebuffer createFramebuffer(FramebufferConfiguration &configuration);
 	VkFramebuffer getFramebuffer(FramebufferConfiguration &configuration);
 	void createDefaultShaders();
 	VkRenderPass createRenderPass(RenderPassConfiguration &configuration);
 	VkRenderPass getRenderPass(RenderPassConfiguration &configuration);
-	VkPipeline createGraphicsPipeline(GraphicsPipelineConfiguration &configuration);
 	void createColorResources();
 	VkFormat findSupportedFormat(const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
 	VkFormat findDepthFormat();
@@ -367,7 +319,6 @@ private:
 	void createCommandPool();
 	void createCommandBuffers();
 	void createSyncObjects();
-	void createDefaultTexture();
 	void cleanup();
 	void cleanupSwapChain();
 	void recreateSwapChain();
@@ -375,9 +326,9 @@ private:
 	void beginFrame();
 	void startRecordingGraphicsCommands();
 	void endRecordingGraphicsCommands();
-	void ensureGraphicsPipelineConfiguration(GraphicsPipelineConfiguration &configuration);
 	void createVulkanVertexFormat(
-		VertexAttributes vertexAttributes, 
+		Shader *shader,
+		const VertexAttributes &attributes, 
 		std::vector<VkVertexInputBindingDescription> &bindingDescriptions, 
 		std::vector<VkVertexInputAttributeDescription> &attributeDescriptions);
 	void prepareDraw(
@@ -388,6 +339,7 @@ private:
 	void setDefaultRenderPass();
 	void startRenderPass();
 	void endRenderPass();
+	void applyScissor();
 	VkSampler createSampler(const SamplerState &sampler);
 	void cleanupUnusedObjects();
 	void requestSwapchainRecreation();
@@ -395,7 +347,6 @@ private:
 	VkInstance instance = VK_NULL_HANDLE;
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 	uint32_t deviceApiVersion = VK_API_VERSION_1_0;
-	bool windowHasStencil = false;
 	int requestedMsaa = 0;
 	VkDevice device = VK_NULL_HANDLE; 
 	OptionalInstanceExtensions optionalInstanceExtensions;
@@ -404,11 +355,12 @@ private:
 	VkQueue presentQueue = VK_NULL_HANDLE;
 	VkSurfaceKHR surface = VK_NULL_HANDLE;
 	VkSwapchainKHR swapChain = VK_NULL_HANDLE;
-	VkSurfaceTransformFlagBitsKHR preTransform = {};
-	Matrix4 displayRotation;
 	std::vector<VkImage> swapChainImages;
+	StrongRef<Texture> fakeBackbuffer;
 	VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
+	PixelFormat swapChainPixelFormat = PIXELFORMAT_UNKNOWN;
 	VkFormat depthStencilFormat = VK_FORMAT_UNDEFINED;
+	PixelFormat depthStencilPixelFormat = PIXELFORMAT_UNKNOWN;
 	VkExtent2D swapChainExtent = VkExtent2D();
 	std::vector<VkImageView> swapChainImageViews;
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -421,10 +373,7 @@ private:
 	VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 	std::unordered_map<RenderPassConfiguration, VkRenderPass, RenderPassConfigurationHasher> renderPasses;
 	std::unordered_map<FramebufferConfiguration, VkFramebuffer, FramebufferConfigurationHasher> framebuffers;
-	std::unordered_map<GraphicsPipelineConfiguration, VkPipeline, GraphicsPipelineConfigurationHasher> graphicsPipelines;
-	std::unordered_map<VkRenderPass, bool> renderPassUsages;
 	std::unordered_map<VkFramebuffer, bool> framebufferUsages;
-	std::unordered_map<VkPipeline, bool> pipelineUsages;
 	std::unordered_map<uint64, VkSampler> samplers;
 	VkCommandPool commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers;
@@ -442,15 +391,13 @@ private:
 	bool swapChainRecreationRequested = false;
 	bool transitionColorDepthLayouts = false;
 	VmaAllocator vmaAllocator = VK_NULL_HANDLE;
-	StrongRef<love::graphics::Texture> defaultTexture;
-	StrongRef<love::graphics::Buffer> defaultConstantColor;
-	StrongRef<love::graphics::Buffer> defaultConstantTexCoord;
+	StrongRef<love::graphics::Buffer> defaultVertexBuffer;
+	StrongRef<StreamBuffer> localUniformBuffer;
 	// functions that need to be called to cleanup objects that were needed for rendering a frame.
 	// We need a vector for each frame in flight.
 	std::vector<std::vector<std::function<void()>>> cleanUpFunctions;
 	std::vector<std::vector<std::function<void()>>> readbackCallbacks;
-	std::vector<ScreenshotReadbackBuffer> screenshotReadbackBuffers;
-	std::set<Shader*> usedShadersInFrame;
+	std::set<StrongRef<Shader>> usedShadersInFrame;
 	RenderpassState renderPassState;
 };
 

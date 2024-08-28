@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -285,6 +285,12 @@ void SpriteBatch::attachAttribute(const std::string &name, Buffer *buffer, Mesh 
 	newattrib.buffer = buffer;
 	newattrib.mesh = mesh;
 
+	BuiltinVertexAttribute builtinattrib;
+	if (getConstant(name.c_str(), builtinattrib))
+		newattrib.builtinAttributeIndex = (int)builtinattrib;
+	else
+		newattrib.builtinAttributeIndex = -1;
+
 	attached_attributes[name] = newattrib;
 }
 
@@ -355,14 +361,11 @@ void SpriteBatch::draw(Graphics *gfx, const Matrix4 &m)
 		if (buffer->getArrayLength() < (size_t) next * 4)
 			throw love::Exception("Buffer with attribute '%s' attached to this SpriteBatch has too few vertices", it.first.c_str());
 
-		int attributeindex = -1;
+		int attributeindex = it.second.builtinAttributeIndex;
 
 		// If the attribute is one of the LOVE-defined ones, use the constant
 		// attribute index for it, otherwise query the index from the shader.
-		BuiltinVertexAttribute builtinattrib;
-		if (getConstant(it.first.c_str(), builtinattrib))
-			attributeindex = (int) builtinattrib;
-		else if (Shader::current)
+		if (attributeindex < 0 && Shader::current)
 			attributeindex = Shader::current->getVertexAttributeIndex(it.first);
 
 		if (attributeindex >= 0)
@@ -395,7 +398,10 @@ void SpriteBatch::draw(Graphics *gfx, const Matrix4 &m)
 	count = std::min(count, next - start);
 
 	if (count > 0)
-		gfx->drawQuads(start, count, attributes, buffers, texture);
+	{
+		Texture *tex = gfx->getTextureOrDefaultForActiveShader(texture);
+		gfx->drawQuads(start, count, attributes, buffers, tex);
+	}
 }
 
 } // graphics

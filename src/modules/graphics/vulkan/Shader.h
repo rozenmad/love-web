@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -29,6 +29,7 @@
 // Libraries
 #include "VulkanWrapper.h"
 #include "libraries/spirv_cross/spirv_reflect.hpp"
+#include "libraries/xxHash/xxhash.h"
 
 // C++
 #include <map>
@@ -45,6 +46,46 @@ namespace graphics
 namespace vulkan
 {
 
+struct GraphicsPipelineConfiguration
+{
+	VkRenderPass renderPass;
+	VertexAttributes vertexAttributes;
+	bool wireFrame;
+	BlendState blendState;
+	ColorChannelMask colorChannelMask;
+	VkSampleCountFlagBits msaaSamples;
+	uint32_t numColorAttachments;
+	PrimitiveType primitiveType;
+	uint64 packedColorAttachmentFormats;
+
+	struct DynamicState
+	{
+		CullMode cullmode = CULL_NONE;
+		Winding winding = WINDING_MAX_ENUM;
+		StencilAction stencilAction = STENCIL_MAX_ENUM;
+		CompareMode stencilCompare = COMPARE_MAX_ENUM;
+		DepthState depthState{};
+	} dynamicState;
+
+	GraphicsPipelineConfiguration()
+	{
+		memset(this, 0, sizeof(GraphicsPipelineConfiguration));
+	}
+
+	bool operator==(const GraphicsPipelineConfiguration &other) const
+	{
+		return memcmp(this, &other, sizeof(GraphicsPipelineConfiguration)) == 0;
+	}
+};
+
+struct GraphicsPipelineConfigurationHasher
+{
+	size_t operator() (const GraphicsPipelineConfiguration &configuration) const
+	{
+		return XXH32(&configuration, sizeof(GraphicsPipelineConfiguration), 0);
+	}
+};
+
 class Graphics;
 
 class Shader final
@@ -52,7 +93,14 @@ class Shader final
 	, public Volatile
 {
 public:
-	Shader(StrongRef<love::graphics::ShaderStage> stages[]);
+
+	struct AttributeInfo
+	{
+		int index;
+		DataBaseType baseType;
+	};
+
+	Shader(StrongRef<love::graphics::ShaderStage> stages[], const CompileOptions &options);
 	virtual ~Shader();
 
 	bool loadVolatile() override;
@@ -75,8 +123,8 @@ public:
 	std::string getWarnings() const override { return ""; }
 
 	int getVertexAttributeIndex(const std::string &name) override;
+	const std::unordered_map<std::string, AttributeInfo> getVertexAttributeIndices() const { return attributes; }
 
-	const UniformInfo *getUniformInfo(const std::string &name) const override;
 	const UniformInfo *getUniformInfo(BuiltinUniform builtin) const override;
 
 	void updateUniform(const UniformInfo *info, int count) override;
@@ -84,62 +132,61 @@ public:
 	void sendTextures(const UniformInfo *info, graphics::Texture **textures, int count) override;
 	void sendBuffers(const UniformInfo *info, love::graphics::Buffer **buffers, int count) override;
 
-	bool hasUniform(const std::string &name) const override;
-
 	void setVideoTextures(graphics::Texture *ytexture, graphics::Texture *cbtexture, graphics::Texture *crtexture) override;
 
 	void setMainTex(graphics::Texture *texture);
 
+	VkPipeline getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfiguration &configuration);
+
 private:
-	void calculateUniformBufferSizeAligned();
 	void compileShaders();
 	void createDescriptorSetLayout();
 	void createPipelineLayout();
 	void createDescriptorPoolSizes();
-	void createStreamBuffers();
 	void buildLocalUniforms(spirv_cross::Compiler &comp, const spirv_cross::SPIRType &type, size_t baseoff, const std::string &basename);
 	void createDescriptorPool();
 	VkDescriptorSet allocateDescriptorSet();
 
-	VkDeviceSize uniformBufferSizeAligned;
+	void setTextureDescriptor(const UniformInfo *info, love::graphics::Texture *texture, int index);
+	void setBufferDescriptor(const UniformInfo *info, love::graphics::Buffer *buffer, int index);
 
-	VkPipeline computePipeline;
+	VkPipeline computePipeline = VK_NULL_HANDLE;
 
-	uint32_t numTextures;
-	uint32_t numBuffers;
-	uint32_t numBufferViews;
-
-	VkDescriptorSetLayout descriptorSetLayout;
-	VkPipelineLayout pipelineLayout;
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 	std::vector<VkDescriptorPoolSize> descriptorPoolSizes;
 
-	// we don't know how much memory we need per frame for the uniform buffer descriptors
-	// we keep a vector of stream buffers that gets dynamically increased if more memory is needed
-	std::vector<StreamBuffer*> streamBuffers;
 	std::vector<std::vector<VkDescriptorPool>> descriptorPools;
+
+	std::vector<VkDescriptorBufferInfo> descriptorBuffers;
+	std::vector<VkDescriptorImageInfo> descriptorImages;
+	std::vector<VkBufferView> descriptorBufferViews;
+	std::vector<VkWriteDescriptorSet> descriptorWrites;
 
 	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 	std::vector<VkShaderModule> shaderModules;
 
 	Graphics *vgfx = nullptr;
-	VkDevice device;
+	VkDevice device = VK_NULL_HANDLE;
 
 	bool isCompute = false;
+	bool resourceDescriptorsDirty = false;
+	VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
 
-	std::unordered_map<std::string, graphics::Shader::UniformInfo> uniformInfos;
 	UniformInfo *builtinUniformInfo[BUILTIN_MAX_ENUM];
 
 	std::unique_ptr<StreamBuffer> uniformBufferObjectBuffer;
 	std::vector<uint8> localUniformData;
 	std::vector<uint8> localUniformStagingData;
-	uint32_t localUniformLocation;
+	uint32_t localUniformLocation = 0;
 	OptionalInt builtinUniformDataOffset;
 
-	std::unordered_map<std::string, int> attributes;
+	std::unordered_map<std::string, AttributeInfo> attributes;
 
-	uint32_t currentFrame;
-	uint32_t currentUsedUniformStreamBuffersCount;
-	uint32_t currentDescriptorPool;
+	std::unordered_map<GraphicsPipelineConfiguration, VkPipeline, GraphicsPipelineConfigurationHasher> graphicsPipelines;
+
+	uint32_t currentFrame = 0;
+	uint32_t currentDescriptorPool = 0;
 };
 
 }

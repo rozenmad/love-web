@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -361,6 +361,7 @@ const luaL_Reg w_Shape_functions[] =
 	{ "getRestitution", w_Shape_getRestitution },
 	{ "getDensity", w_Shape_getDensity },
 	{ "getBody", w_Shape_getBody },
+	{ "getShape", w_Shape_getShape },
 	{ "isSensor", w_Shape_isSensor },
 	{ "testPoint", w_Shape_testPoint },
 	{ "rayCast", w_Shape_rayCast },

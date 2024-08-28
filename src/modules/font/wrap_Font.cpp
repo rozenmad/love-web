@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -94,6 +94,11 @@ static TrueTypeRasterizer::Settings luax_checktruetypesettings(lua_State* L, int
 		lua_getfield(L, startidx, "dpiscale");
 		if (!lua_isnoneornil(L, -1))
 			s.dpiScale.set((float)luaL_checknumber(L, -1));
+		lua_pop(L, 1);
+
+		lua_getfield(L, startidx, "sdf");
+		if (!lua_isnoneornil(L, -1))
+			s.sdf = lua_toboolean(L, -1);
 		lua_pop(L, 1);
 	}
 

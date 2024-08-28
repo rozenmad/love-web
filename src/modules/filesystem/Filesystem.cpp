@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -38,6 +38,9 @@
 #include <unistd.h>
 #endif
 
+// C++17 std::filesystem
+#include <filesystem>
+
 namespace love
 {
 namespace filesystem
@@ -45,7 +48,8 @@ namespace filesystem
 
 love::Type Filesystem::type("filesystem", &Module::type);
 
-Filesystem::Filesystem()
+Filesystem::Filesystem(const char *name)
+	: Module(M_FILESYSTEM, name)
 {
 }
 
@@ -132,7 +136,21 @@ static bool createDirectoryRaw(const std::string &path)
 	std::wstring wpath = to_widestr(path);
 	return CreateDirectoryW(wpath.c_str(), nullptr) != 0;
 #else
-	return mkdir(path.c_str(), S_IRWXU) == 0;
+	int mode = S_IRWXU;
+
+#ifdef LOVE_ANDROID
+	// Need to create save directory with ugo+rwx and setgid bit if
+	// t.externalstorage is set and it's for save directory.
+	auto fs = Module::getInstance<Filesystem>(Module::M_FILESYSTEM);
+	if (fs != nullptr && fs->isAndroidSaveExternal())
+	{
+		const std::string &savedir = fs->getFullCommonPath(Filesystem::COMMONPATH_APP_SAVEDIR);
+		if (path.rfind(savedir, 0) == 0)
+			mode |= S_IRWXG | S_IRWXO | S_ISGID;
+	}
+#endif
+
+	return mkdir(path.c_str(), mode) == 0;
 #endif
 }
 
@@ -165,6 +183,18 @@ bool Filesystem::createRealDirectory(const std::string &path)
 	}
 
 	return true;
+}
+
+std::string Filesystem::canonicalizeRealPath(const std::string &p) const
+{
+	try
+	{
+		return std::filesystem::weakly_canonical(p).string();
+	}
+	catch (std::exception &)
+	{
+		return p;
+	}
 }
 
 std::string Filesystem::getExecutablePath() const

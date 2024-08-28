@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -38,7 +38,8 @@ TrueTypeRasterizer::TrueTypeRasterizer(FT_Library library, love::Data *data, int
 	, hinting(settings.hinting)
 {
 	dpiScale = settings.dpiScale.get(defaultdpiscale);
-	size = floorf(size * dpiScale + 0.5f);
+
+	sdf = settings.sdf;
 
 	if (size <= 0)
 		throw love::Exception("Invalid TrueType font size: %d", size);
@@ -53,7 +54,7 @@ TrueTypeRasterizer::TrueTypeRasterizer(FT_Library library, love::Data *data, int
 	if (err != FT_Err_Ok)
 		throw love::Exception("TrueType Font loading error: FT_New_Face failed: 0x%x (problem with font file?)", err);
 
-	err = FT_Set_Pixel_Sizes(face, size, size);
+	err = FT_Set_Char_Size(face, size << 6, size << 6, 72 * dpiScale, 72 * dpiScale);
 
 	if (err != FT_Err_Ok)
 		throw love::Exception("TrueType Font loading error: FT_Set_Pixel_Sizes failed: 0x%x (invalid size?)", err);
@@ -119,13 +120,26 @@ GlyphData *TrueTypeRasterizer::getGlyphDataForIndex(int index) const
 		throw love::Exception("TrueType Font glyph error: FT_Get_Glyph failed (0x%x)", err);
 
 	FT_Render_Mode rendermode = FT_RENDER_MODE_NORMAL;
-	if (hinting == HINTING_MONO)
+	if (sdf)
+		rendermode = FT_RENDER_MODE_SDF;
+	else if (hinting == HINTING_MONO)
 		rendermode = FT_RENDER_MODE_MONO;
 
 	err = FT_Glyph_To_Bitmap(&ftglyph, rendermode, 0, 1);
 
 	if (err != FT_Err_Ok)
-		throw love::Exception("TrueType Font glyph error: FT_Glyph_To_Bitmap failed (0x%x)", err);
+	{
+		if (rendermode == FT_RENDER_MODE_SDF)
+		{
+			err = FT_Glyph_To_Bitmap(&ftglyph, FT_RENDER_MODE_NORMAL, 0, 1);
+			if (err != FT_Err_Ok)
+				throw love::Exception("TrueType Font glyph error: FT_Glyph_To_Bitmap failed (0x%x)", err);
+		}
+		else
+		{
+			throw love::Exception("TrueType Font glyph error: FT_Glyph_To_Bitmap failed (0x%x)", err);
+		}
+	}
 
 	FT_BitmapGlyph bitmap_glyph = (FT_BitmapGlyph) ftglyph;
 	const FT_Bitmap &bitmap = bitmap_glyph->bitmap; //just to make things easier

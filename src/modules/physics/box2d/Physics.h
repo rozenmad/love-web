@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2023 LOVE Development Team
+ * Copyright (c) 2006-2024 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -65,10 +65,6 @@ public:
 	Physics();
 	virtual ~Physics();
 
-	// Implements Module.
-	const char *getName() const;
-	virtual ModuleType getModuleType() const { return M_PHYSICS; }
-
 	/**
 	 * Creates a new World.
 	 * @param gx Gravity along x-axis.
@@ -101,7 +97,8 @@ public:
 	Body *newCircleBody(World *world, Body::Type type, float x, float y, float radius);
 	Body *newRectangleBody(World *world, Body::Type type, float x, float y, float w, float h, float angle);
 	Body *newPolygonBody(World *world, Body::Type type, const Vector2 *coords, int count);
-	Body *newEdgeBody(World *world, Body::Type type, float x1, float y1, float x2, float y2, bool oneSided);
+	Body *newEdgeBody(World *world, Body::Type type, float x1, float y1, float x2, float y2);
+	Body *newEdgeBody(World *world, Body::Type type, float x1, float y1, float x2, float y2, float prevx, float prevy, float nextx, float nexty);
 	Body *newChainBody(World *world, Body::Type type, bool loop, const Vector2 *coords, int count);
 
 	// Necessary to support the deprecated newFixture API.
@@ -134,7 +131,8 @@ public:
 	 * @param x2 The x coordinate of the second point.
 	 * @param y2 The y coordinate of the second point.
 	 **/
-	EdgeShape *newEdgeShape(Body *body, float x1, float y1, float x2, float y2, bool oneSided);
+	EdgeShape *newEdgeShape(Body *body, float x1, float y1, float x2, float y2);
+	EdgeShape *newEdgeShape(Body *body, float x1, float y1, float x2, float y2, float prevx, float prevy, float nextx, float nexty);
 
 	/**
 	 * Creates a new PolygonShape from a variable number of vertices.
