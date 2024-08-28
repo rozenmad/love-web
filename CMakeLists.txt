@@ -655,6 +655,16 @@ add_library(love_graphics_opengl STATIC
 	src/modules/graphics/opengl/Texture.h
 )
 
+target_link_libraries(love_graphics_opengl PUBLIC
+	lovedep::SDL
+)
+
+add_library(love_graphics INTERFACE)
+	target_link_libraries(love_graphics INTERFACE
+	love_graphics_root
+	love_graphics_opengl
+)
+
 if(EMSCRIPTEN)
 	set(LOVE_SRC_MODULE_GRAPHICS
 		${LOVE_SRC_MODULE_GRAPHICS_ROOT}
@@ -664,16 +674,6 @@ if(EMSCRIPTEN)
 	source_group("modules\\graphics" FILES ${LOVE_SRC_MODULE_GRAPHICS_ROOT})
 	source_group("modules\\graphics\\opengl" FILES ${LOVE_SRC_MODULE_GRAPHICS_OPENGL})
 else()
-	target_link_libraries(love_graphics_opengl PUBLIC
-		lovedep::SDL
-	)
-
-	add_library(love_graphics INTERFACE)
-	target_link_libraries(love_graphics INTERFACE
-		love_graphics_root
-		love_graphics_opengl
-	)
-
 	if(APPLE)
 		add_library(love_graphics_metal STATIC
 			src/modules/graphics/metal/Buffer.h
@@ -727,6 +727,7 @@ else()
 		target_link_libraries(love_graphics INTERFACE
 			love_graphics_vulkan
 		)
+	endif()
 endif()
 
 #

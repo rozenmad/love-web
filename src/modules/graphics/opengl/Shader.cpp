@@ -282,15 +282,6 @@ bool Shader::loadVolatile()
 {
 	OpenGL::TempDebugGroup debuggroup("Shader load");
 
-	// love::graphics::Shader sets up the shader code-side of this.
-	auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
-#ifdef LOVE_EMSCRIPTEN
-	splitUniformsPerDraw = true;
-#else
-	if (gfx != nullptr)
-		splitUniformsPerDraw = !gfx->getCapabilities().features[Graphics::FEATURE_PIXEL_SHADER_HIGHP];
-#endif
-
 	// zero out active texture list
 	textureUnits.clear();
 	textureUnits.push_back(TextureUnit());

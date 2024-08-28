@@ -48,8 +48,14 @@
 #include <OpenAL-Soft/al.h>
 #endif
 #else
+#ifdef LOVE_EMSCRIPTEN
+#include <AL/alc.h>
+#include <AL/al.h>
+#else
 #include <alc.h>
 #include <al.h>
+#include <alext.h>
+#endif // LOVE_EMSCRIPTEN
 #endif
 
 namespace love

@@ -636,15 +636,6 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 	if (info.usesMRT)
 		ss << "#define LOVE_MULTI_RENDER_TARGETS 1\n";
 
-#ifdef LOVE_EMSCRIPTEN
-	ss << "#define LOVE_SPLIT_UNIFORMS_PER_DRAW 1\n";
-#else
-	// Note: backends are expected to handle this situation if highp is ever
-	// conditional in that backend.
-	if (!gfx->getCapabilities().features[Graphics::FEATURE_PIXEL_SHADER_HIGHP])
-		ss << "#define LOVE_SPLIT_UNIFORMS_PER_DRAW 1\n";
-#endif
-
 	if (gfx->isUsingNoTextureCubeShadowBiasHack())
 		ss << "#define LOVE_NO_TEXTURECUBESHADOWBIAS_HACK 1\n";
 
@@ -667,7 +658,7 @@ std::string Shader::createShaderStageCode(Graphics *gfx, ShaderStageType stage, 
 	else
 		throw love::Exception("Unknown shader entry point %d", info.stages[stage]);
 
-	ss << ((!gles && (lang == Shader::LANGUAGE_GLSL1 || glsl1on3)) ? "#line 0\n" : "#line 1\n");
+	ss << "#line 1\n";
 	ss << code;
 
 	if (info.stages[stage] == ENTRYPOINT_HIGHLEVEL)
