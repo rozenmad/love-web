@@ -398,6 +398,7 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 			}
 		}
 	}
+
 #ifdef LOVE_GRAPHICS_METAL
 	else if (renderer == graphics::RENDERER_METAL)
 	{
@@ -1617,8 +1618,9 @@ void Window::showFileDialog(const FileDialogData &data, FileDialogCallback callb
 	}
 
 	SDL_SetBooleanProperty(state->props, SDL_PROP_FILE_DIALOG_MANY_BOOLEAN, data.multiSelect);
-
+#ifndef LOVE_EMSCRIPTEN
 	SDL_ShowFileDialogWithProperties(sdltype, fileDialogCallbackSDL, state, state->props);
+#endif
 }
 
 void Window::requestAttention(bool continuous)

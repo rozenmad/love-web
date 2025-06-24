@@ -2007,19 +2007,22 @@ else()
 	if(EMSCRIPTEN)
 		add_definitions(
 			"-fexceptions"
-			"-s USE_SDL=2"
-			"--post-js ${CMAKE_CURRENT_SOURCE_DIR}/src/scripts/EmscriptenPersistence.js")
+			"-s USE_SDL=3"
+		)
 
 		set(EMSCRIPTEN_ARGS
 			"-fexceptions"
+			"--post-js ${CMAKE_CURRENT_SOURCE_DIR}/src/scripts/EmscriptenPersistence.js"
 			"-s WASM=1"
 			"-s FULL_ES2=1"
 			"-s FULL_ES3=1"
-			"-s USE_SDL=2"
+			"-s MAX_WEBGL_VERSION=2"
+			"-s USE_SDL=3"
 			"-s CASE_INSENSITIVE_FS=1"
 			"-s MODULARIZE=1"
 			"-s EXPORT_NAME=\"'Love'\""
 			"-s EXPORTED_FUNCTIONS=\"['_main','_malloc']\""
+			"-s EXPORTED_RUNTIME_METHODS=HEAPU8"
 			"-s ALLOW_MEMORY_GROWTH=1" # for dynamic resizing of memory, should not have a performance impact as using WASM
 			"-s FORCE_FILESYSTEM=1" # to fix Module.addDependency not existing
 			"-lidbfs.js" # to fix the ReferenceError: IDBFS is not defined

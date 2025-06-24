@@ -337,7 +337,7 @@ function love.init()
 		"timer",
 		"event",
 		"keyboard",
-		--"joystick",
+		"joystick",
 		"mouse",
 		"touch",
 		"sound",
