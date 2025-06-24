@@ -25,7 +25,7 @@
 #include "touch/Touch.h"
 
 // SDL
-#include <SDL_events.h>
+#include <SDL3/SDL_events.h>
 
 namespace love
 {
@@ -50,6 +50,8 @@ public:
 	// when they're updated. So we only update our touch press state in
 	// love::event::sdl::Event::convert.
 	void onEvent(Uint32 eventtype, const TouchInfo &info);
+
+	static DeviceType getDeviceType(SDL_TouchDeviceType sdltype);
 
 private:
 

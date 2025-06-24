@@ -681,6 +681,22 @@ Shader::Shader(StrongRef<ShaderStage> _stages[], const CompileOptions &options)
 	if (!validateInternal(_stages, err, reflection))
 		throw love::Exception("%s", err.c_str());
 
+	std::vector<std::string> unsetVertexInputLocations;
+
+	for (const auto &kvp : reflection.vertexInputs)
+	{
+		if (kvp.second < 0)
+			unsetVertexInputLocations.push_back(kvp.first);
+	}
+
+	if (!unsetVertexInputLocations.empty())
+	{
+		std::string str = unsetVertexInputLocations[0];
+		for (size_t i = 1; i < unsetVertexInputLocations.size(); i++)
+			str += ", " + unsetVertexInputLocations[i];
+		unsetVertexInputLocationsString = str;
+	}
+
 	activeTextures.resize(reflection.textureCount);
 	activeBuffers.resize(reflection.bufferCount);
 
@@ -812,6 +828,125 @@ bool Shader::hasUniform(const std::string &name) const
 	return it != reflection.allUniforms.end() && it->second->active;
 }
 
+void Shader::setVideoTextures(love::graphics::Texture *ytexture, love::graphics::Texture *cbtexture, love::graphics::Texture *crtexture)
+{
+	const BuiltinUniform builtins[3] = {
+		BUILTIN_TEXTURE_VIDEO_Y,
+		BUILTIN_TEXTURE_VIDEO_CB,
+		BUILTIN_TEXTURE_VIDEO_CR,
+	};
+
+	love::graphics::Texture *textures[3] = {ytexture, cbtexture, crtexture};
+
+	for (int i = 0; i < 3; i++)
+	{
+		const UniformInfo *info = getUniformInfo(builtins[i]);
+		if (info != nullptr)
+			sendTextures(info, &textures[i], 1, true);
+	}
+}
+
+void Shader::sendTextures(const UniformInfo *info, Texture **textures, int count)
+{
+	Shader::sendTextures(info, textures, count, false);
+}
+
+void Shader::sendBuffers(const UniformInfo *info, Buffer **buffers, int count)
+{
+	Shader::sendBuffers(info, buffers, count, false);
+}
+
+void Shader::sendTextures(const UniformInfo *info, Texture **textures, int count, bool internalUpdate)
+{
+	UniformType basetype = info->baseType;
+
+	if (basetype != UNIFORM_SAMPLER && basetype != UNIFORM_STORAGETEXTURE)
+		return;
+
+	if (!internalUpdate && current == this)
+		flushBatchedDraws();
+
+	count = std::min(count, info->count);
+
+	for (int i = 0; i < count; i++)
+	{
+		love::graphics::Texture *tex = textures[i];
+		bool isdefault = tex == nullptr;
+
+		if (tex != nullptr)
+		{
+			if (!validateTexture(info, tex, internalUpdate))
+				continue;
+		}
+		else
+		{
+			auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
+			tex = gfx->getDefaultTexture(info->textureType, info->dataBaseType, info->isDepthSampler);
+		}
+
+		tex->retain();
+
+		int resourceindex = info->resourceIndex + i;
+
+		if (activeTextures[resourceindex] != nullptr)
+			activeTextures[resourceindex]->release();
+
+		activeTextures[resourceindex] = tex;
+
+		applyTexture(info, i, tex, basetype, isdefault);
+	}
+}
+
+void Shader::sendBuffers(const UniformInfo *info, Buffer **buffers, int count, bool internalUpdate)
+{
+	UniformType basetype = info->baseType;
+
+	if (basetype != UNIFORM_TEXELBUFFER && basetype != UNIFORM_STORAGEBUFFER)
+		return;
+
+	if (!internalUpdate && current == this)
+		flushBatchedDraws();
+
+	count = std::min(count, info->count);
+
+	for (int i = 0; i < count; i++)
+	{
+		love::graphics::Buffer *buffer = buffers[i];
+		bool isdefault = buffer == nullptr;
+
+		if (buffer != nullptr)
+		{
+			if (!validateBuffer(info, buffer, internalUpdate))
+				continue;
+		}
+		else
+		{
+			auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
+			if (basetype == UNIFORM_TEXELBUFFER)
+				buffer = gfx->getDefaultTexelBuffer(info->dataBaseType);
+			else
+				buffer = gfx->getDefaultStorageBuffer();
+		}
+
+		buffer->retain();
+
+		int resourceindex = info->resourceIndex + i;
+
+		if (activeBuffers[resourceindex] != nullptr)
+			activeBuffers[resourceindex]->release();
+
+		activeBuffers[resourceindex] = buffer;
+
+		applyBuffer(info, i, buffer, basetype, isdefault);
+	}
+}
+
+void Shader::flushBatchedDraws() const
+{
+	if (current == this)
+		Graphics::flushBatchedDrawsGlobal();
+}
+
 const Shader::UniformInfo *Shader::getMainTextureInfo() const
 {
 	return getUniformInfo(BUILTIN_TEXTURE_MAIN);
@@ -884,7 +1019,7 @@ void Shader::validateDrawState(PrimitiveType primtype, Texture *maintex) const
 	}
 
 	if (!isResourceBaseTypeCompatible(info->dataBaseType, getDataBaseType(maintex->getPixelFormat())))
-		throw love::Exception("Texture's data format base type must match the uniform variable declared in the shader (float, int, or uint).");
+		throw love::Exception("Main texture's data format base type must match the MainTex declaration in the shader (float, int, or uint).");
 
 	if (info->isDepthSampler != maintex->getSamplerState().depthSampleMode.hasValue)
 	{
@@ -975,9 +1110,9 @@ static DataFormat getDataFormat(glslang::TBasicType basictype, int components, i
 		else if (components == 2)
 			return DATAFORMAT_FLOAT_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_FLOAT_VEC2;
+			return DATAFORMAT_FLOAT_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_FLOAT_VEC2;
+			return DATAFORMAT_FLOAT_VEC4;
 	}
 	else if (basictype == glslang::EbtInt)
 	{
@@ -986,20 +1121,20 @@ static DataFormat getDataFormat(glslang::TBasicType basictype, int components, i
 		else if (components == 2)
 			return DATAFORMAT_INT32_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_INT32_VEC2;
+			return DATAFORMAT_INT32_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_INT32_VEC2;
+			return DATAFORMAT_INT32_VEC4;
 	}
-	else if (basictype == glslang::EbtUint)
+	else if (basictype == glslang::EbtUint || basictype == glslang::EbtBool)
 	{
 		if (components == 1)
 			return DATAFORMAT_UINT32;
 		else if (components == 2)
 			return DATAFORMAT_UINT32_VEC2;
 		else if (components == 3)
-			return DATAFORMAT_UINT32_VEC2;
+			return DATAFORMAT_UINT32_VEC3;
 		else if (components == 4)
-			return DATAFORMAT_UINT32_VEC2;
+			return DATAFORMAT_UINT32_VEC4;
 	}
 
 	return DATAFORMAT_MAX_ENUM;
@@ -1092,6 +1227,7 @@ static T convertData(const glslang::TConstUnion &data)
 		case glslang::EbtUint8: return (T) data.getU8Const();
 		case glslang::EbtUint16: return (T) data.getU16Const();
 		case glslang::EbtUint64: return (T) data.getU64Const();
+		case glslang::EbtBool: return (T)data.getBConst();
 		default: return 0;
 	}
 }
@@ -1127,7 +1263,7 @@ static bool AddFieldsToFormat(std::vector<Buffer::DataDeclaration> &format, int 
 		DataFormat dataformat = getDataFormat(type->getBasicType(), type->getVectorSize(), type->getMatrixRows(), type->getMatrixCols(), type->isMatrix());
 		if (dataformat == DATAFORMAT_MAX_ENUM)
 		{
-			err = "Shader validation error:\n";
+			err = "Shader validation error:\nUnhandled data format for type " + std::to_string((int)type->getBasicType()) + std::string(" with name ") + basename;
 			return false;
 		}
 
@@ -1148,7 +1284,7 @@ bool Shader::validateInternal(StrongRef<ShaderStage> stages[], std::string &err,
 			program.addShader(stages[i]->getGLSLangValidationShader());
 	}
 
-	if (!program.link(EshMsgCrossStageIO))
+	if (!program.link((EShMessages)(EShMsgValidateCrossStageIO | EshMsgOverlappingLocations)))
 	{
 		err = "Cannot compile shader:\n\n" + std::string(program.getInfoLog()) + "\n" + std::string(program.getInfoDebugLog());
 		return false;
@@ -1179,6 +1315,21 @@ bool Shader::validateInternal(StrongRef<ShaderStage> stages[], std::string &err,
 				return false;
 			}
 		}
+	}
+
+	for (int i = 0; i < program.getNumPipeInputs(); i++)
+	{
+		const glslang::TObjectReflection &info = program.getPipeInput(i);
+
+		// Avoid builtins.
+		if (info.name.rfind("gl_", 0) == 0)
+			continue;
+
+		int location = info.layoutLocation();
+		if (location == glslang::TQualifier::layoutLocationEnd)
+			location = -1;
+
+		reflection.vertexInputs[info.name] = location;
 	}
 
 	reflection.textureCount = 0;
@@ -1532,17 +1683,15 @@ bool Shader::validateBuffer(const UniformInfo *info, Buffer *buffer, bool intern
 	{
 		if (info->bufferStride != buffer->getArrayStride())
 		{
-			if (internalUpdate)
-				return false;
-			else
+			// Don't prevent this from working for internally bound default resources.
+			if (!internalUpdate)
 				throw love::Exception("Shader storage block '%s' has an array stride of %d bytes, but the given Buffer has an array stride of %d bytes.",
 					info->name.c_str(), info->bufferStride, buffer->getArrayStride());
 		}
 		else if (info->bufferMemberCount != buffer->getDataMembers().size())
 		{
-			if (internalUpdate)
-				return false;
-			else
+			// Don't prevent this from working for internally bound default resources.
+			if (!internalUpdate)
 				throw love::Exception("Shader storage block '%s' has a struct with %d fields, but the given Buffer has a format with %d members.",
 					info->name.c_str(), info->bufferMemberCount, buffer->getDataMembers().size());
 		}

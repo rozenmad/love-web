@@ -214,6 +214,7 @@ enum class CommonFormat
 	XYf_STf_RGBAub,
 	XYf_STus_RGBAub,
 	XYf_STPf_RGBAub,
+	COUNT,
 };
 
 struct DataFormatInfo
@@ -314,7 +315,7 @@ struct VertexBufferLayout
 
 struct VertexAttributes
 {
-	static const uint32 MAX = 32;
+	static const uint32 MAX = 30;
 
 	uint32 enableBits = 0; // indexed by attribute
 	uint32 instanceBits = 0; // indexed by buffer
@@ -377,6 +378,17 @@ struct VertexAttributes
 	void setCommonFormat(CommonFormat format, uint8 bufferindex);
 
 	bool operator == (const VertexAttributes &other) const;
+};
+
+struct VertexAttributesID
+{
+	int id = 0;
+
+	bool isValid() const { return id > 0; }
+	void invalidate() { id = 0; }
+
+	bool operator == (VertexAttributesID other) const { return other.id == id; }
+	bool operator != (VertexAttributesID other) const { return other.id != id; }
 };
 
 size_t getFormatStride(CommonFormat format);

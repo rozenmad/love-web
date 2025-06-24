@@ -3,7 +3,10 @@ on: [push, pull_request]
 
 jobs:
   Linux:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04-arm]
     permissions:
       checks: write
       pull-requests: write
@@ -24,16 +27,21 @@ jobs:
                                           libegl1-mesa-dev libibus-1.0-dev fcitx-libs-dev libsamplerate0-dev \
                                           libsndio-dev libwayland-dev libxkbcommon-dev libdrm-dev libgbm-dev \
                                           libcurl4-openssl-dev libfuse2 wmctrl openbox mesa-vulkan-drivers \
+                                          libpipewire-0.3-dev libwayland-dev libdecor-0-dev liburing-dev \
                                           libvulkan1
+    - name: Install Vulkan SDK
+      if: ${{ runner.arch == 'X64' }}
+      run: |
+        set -e
         wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
         sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.3.283-jammy.list https://packages.lunarg.com/vulkan/1.3.283/lunarg-vulkan-1.3.283-jammy.list
-        sudo apt update
-        sudo apt install --assume-yes vulkan-sdk
+        sudo apt-get update
+        sudo apt-get install --assume-yes vulkan-sdk
     - name: Checkout love-appimage-source
       uses: actions/checkout@v4
       with:
         repository: love2d/love-appimage-source
-        ref: 12.x
+        ref: main
     - name: Checkout LÖVE
       uses: actions/checkout@v4
       with:
@@ -72,17 +80,17 @@ jobs:
       uses: ellraiser/love-test-report@main
       with:
         name: Love Testsuite Linux
-        title: test-report-linux-opengl
+        title: test-report-linux-${{ runner.arch }}-opengl
         path: love2d-${{ github.sha }}/testing/output/lovetest_all.md
         token: ${{ secrets.GITHUB_TOKEN }}
     - name: Zip Test Output (opengl)
       run: |
-        7z a -tzip test-output-linux-opengl.zip love2d-${{ github.sha }}/testing/output/
+        7z a -tzip test-output-linux-opengl-${{ runner.arch }}.zip love2d-${{ github.sha }}/testing/output/
     - name: Artifact Test Output (opengl)
       uses: actions/upload-artifact@v4
       with:
-        name: test-output-linux-opengl-${{ steps.report1.outputs.conclusion }}
-        path: test-output-linux-opengl.zip
+        name: test-output-linux-${{ runner.arch }}-opengl-${{ steps.report1.outputs.conclusion }}
+        path: test-output-linux-${{ runner.arch }}-opengl.zip
     # linux opengles tests
     - name: Run Test Suite (opengles)
       env:
@@ -95,37 +103,39 @@ jobs:
       id: report2
       with:
         name: Love Testsuite Linux
-        title: test-report-linux-opengles
+        title: test-report-linux-${{ runner.arch }}-opengles
         path: love2d-${{ github.sha }}/testing/output/lovetest_all.md
         token: ${{ secrets.GITHUB_TOKEN }}
     - name: Zip Test Output (opengles)
       run: |
-        7z a -tzip test-output-linux-opengles.zip love2d-${{ github.sha }}/testing/output/
+        7z a -tzip test-output-linux-opengles-${{ runner.arch }}.zip love2d-${{ github.sha }}/testing/output/
     - name: Artifact Test Output (opengles)
       uses: actions/upload-artifact@v4
       with:
-        name: test-output-linux-opengles-${{ steps.report2.outputs.conclusion }}
-        path: test-output-linux-opengles.zip
+        name: test-output-linux-${{ runner.arch }}-opengles-${{ steps.report2.outputs.conclusion }}
+        path: test-output-linux-${{ runner.arch }}-opengles.zip
     # linux vulkan tests
     - name: Run Test Suite (vulkan)
       env:
-        LOVE_GRAPHICS_DEBUG: 1
+        LOVE_GRAPHICS_DEBUG: ${{ runner.arch == 'ARM64' && '0' || '1' }} 
+        LOVE_GRAPHICS_VULKAN_ALLOW_SOFTWARE: 1
       run: |
         ./love-${{ github.sha }}.AppImage love2d-${{ github.sha }}/testing/main.lua --all --isRunner --renderers vulkan
     - name: Love Test Report (vulkan)
       uses: ellraiser/love-test-report@main
+      id: report3
       with:
         name: Love Testsuite Linux
-        title: test-report-linux-vulkan
+        title: test-report-linux-${{ runner.arch }}-vulkan
         path: love2d-${{ github.sha }}/testing/output/lovetest_all.md
     - name: Zip Test Output (vulkan)
       run: |
-        7z a -tzip test-output-linux-vulkan.zip love2d-${{ github.sha }}/testing/output/
+        7z a -tzip test-output-linux-vulkan-${{ runner.arch }}.zip love2d-${{ github.sha }}/testing/output/
     - name: Artifact Test Output (vulkan)
       uses: actions/upload-artifact@v4
       with:
-        name: test-output-linux-vulkan
-        path: test-output-linux-vulkan.zip
+        name: test-output-linux-${{ runner.arch }}-vulkan-${{ steps.report3.outputs.conclusion }}
+        path: test-output-linux-${{ runner.arch }}-vulkan.zip
     - name: Stop xvfb and openbox
       # should always stop xvfb and openbox even if other steps failed
       if: always()
@@ -135,18 +145,19 @@ jobs:
     - name: Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: love-linux-x86_64.AppImage
+        name: love-linux-${{ runner.arch }}.AppImage
         path: love-${{ github.sha }}.AppImage
     - name: Artifact Debug Symbols
       uses: actions/upload-artifact@v4
       with:
-        name: love-x86_64-AppImage-debug
+        name: love-${{ runner.arch }}-AppImage-debug
         path: love-${{ github.sha }}.AppImage-debug.tar.gz
     - name: Check Tests Passing
-      if: steps.report1.outputs.conclusion == 'failure' || steps.report2.outputs.conclusion == 'failure'
+      if: steps.report1.outputs.conclusion == 'failure' || steps.report2.outputs.conclusion == 'failure' || steps.report3.outputs.conclusion == 'failure'
       run: |
         echo "${{ steps.report1.outputs.failed }} opengl tests failed"
         echo "${{ steps.report2.outputs.failed }} opengles tests failed"
+        echo "${{ steps.report3.outputs.failed }} vulkan tests failed"
         exit 1
 
   Windows:
@@ -264,7 +275,7 @@ jobs:
         CFLAGS: /Zi
         CXXFLAGS: /Zi
         LDFLAGS: /DEBUG:FULL /OPT:REF /OPT:ICF
-      run: cmake -Bbuild -Smegasource -T v143 -A ${{ matrix.platform }} --install-prefix %CD%\install -DCMAKE_PDB_OUTPUT_DIRECTORY=%CD%\pdb ${{ steps.vars.outputs.moredef }}
+      run: cmake -Bbuild -Smegasource -T v143 -A ${{ matrix.platform }},version=10.0.26100.0 --install-prefix %CD%\install -DCMAKE_PDB_OUTPUT_DIRECTORY=%CD%\pdb ${{ steps.vars.outputs.moredef }}
     - name: Install
       run: cmake --build build --target PACKAGE --config Release -j2
     - name: Copy LuaJIT lua51.pdb
@@ -304,7 +315,7 @@ jobs:
     - name: Install Mesa 
       if: steps.vars.outputs.arch != 'ARM64'
       run: |
-        curl -L --output mesa.7z --url https://github.com/pal1000/mesa-dist-win/releases/download/23.2.1/mesa3d-23.2.1-release-msvc.7z
+        curl -L --output mesa.7z --url https://github.com/pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z
         7z x mesa.7z -o*
         powershell.exe mesa\systemwidedeploy.cmd 1
     # build love to use for the tests
@@ -390,6 +401,7 @@ jobs:
 #      if: steps.vars.outputs.arch != 'ARM64'
 #      env:
 #        LOVE_GRAPHICS_DEBUG: 1
+#        LOVE_GRAPHICS_VULKAN_ALLOW_SOFTWARE: 1
 #      run: |
 #        powershell.exe ./install/lovec.exe ./megasource/libs/love/testing/main.lua --all --isRunner --renderers vulkan
 #    - name: Love Test Report (vulkan)
@@ -427,8 +439,9 @@ jobs:
         repository: love2d/love-apple-dependencies
         ref: main
     - name: Move Dependencies
-      run:
+      run: |
         mv apple-dependencies/macOS/Frameworks platform/xcode/macosx
+        mv apple-dependencies/shared platform/xcode
     - name: Build
       run:
         xcodebuild clean archive -project platform/xcode/love.xcodeproj -scheme love-macosx -configuration Release -destination generic/platform=macOS -archivePath love-macos.xcarchive
@@ -514,6 +527,7 @@ jobs:
     - name: Move Dependencies
       run: |
         mv apple-dependencies/iOS/libraries platform/xcode/ios
+        mv apple-dependencies/shared platform/xcode
     - name: Build
       run:
         xcodebuild -project platform/xcode/love.xcodeproj -scheme love-ios -configuration Release -destination 'platform=iOS Simulator,name=iPhone 15'

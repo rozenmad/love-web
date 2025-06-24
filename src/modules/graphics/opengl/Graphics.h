@@ -71,7 +71,7 @@ public:
 
 	void draw(const DrawCommand &cmd) override;
 	void draw(const DrawIndexedCommand &cmd) override;
-	void drawQuads(int start, int count, const VertexAttributes &attributes, const BufferBindings &buffers, love::graphics::Texture *texture) override;
+	void drawQuads(int start, int count, VertexAttributesID attributesID, const BufferBindings &buffers, love::graphics::Texture *texture) override;
 
 	void clear(OptionalColorD color, OptionalInt stencil, OptionalDouble depth) override;
 	void clear(const std::vector<OptionalColorD> &colors, OptionalInt stencil, OptionalDouble depth) override;
@@ -154,6 +154,8 @@ private:
 	GLuint getSystemBackbufferFBO() const;
 
 	void setDebug(bool enable);
+
+	void setScissor(const Rect &rect, bool rtActive);
 
 	uint32 computePixelFormatUsage(PixelFormat format, bool readable);
 

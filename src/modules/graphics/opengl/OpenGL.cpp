@@ -37,10 +37,10 @@
 #include <cstdio>
 
 // For SDL_GL_GetProcAddress.
-#include <SDL_video.h>
+#include <SDL3/SDL_video.h>
 
 #ifdef LOVE_IOS
-#include <SDL_syswm.h>
+#include <SDL3/SDL_video.h>
 #endif
 
 #ifdef LOVE_ANDROID
@@ -943,7 +943,11 @@ uint32 OpenGL::getStencilWriteMask() const
 
 void OpenGL::setColorWriteMask(uint32 mask)
 {
-	glColorMask(mask & (1 << 0), mask & (1 << 1), mask & (1 << 2), mask & (1 << 3));
+	GLboolean r = (mask & (1 << 0)) ? GL_TRUE : GL_FALSE;
+	GLboolean g = (mask & (1 << 1)) ? GL_TRUE : GL_FALSE;
+	GLboolean b = (mask & (1 << 2)) ? GL_TRUE : GL_FALSE;
+	GLboolean a = (mask & (1 << 3)) ? GL_TRUE : GL_FALSE;
+	glColorMask(r, g, b, a);
 	state.colorWriteMask = mask;
 }
 
@@ -962,10 +966,8 @@ GLuint OpenGL::getDefaultFBO() const
 {
 #ifdef LOVE_IOS
 	// Hack: iOS uses a custom FBO.
-	SDL_SysWMinfo info = {};
-	SDL_VERSION(&info.version);
-	SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &info);
-	return info.info.uikit.framebuffer;
+	SDL_PropertiesID props = SDL_GetWindowProperties(SDL_GL_GetCurrentWindow());
+	return (GLuint)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0);
 #else
 	return 0;
 #endif
@@ -1172,12 +1174,12 @@ bool OpenGL::rawTexStorage(TextureType target, int levels, PixelFormat pixelform
 {
 	GLenum gltarget = getGLTextureType(target);
 	TextureFormat fmt = convertPixelFormat(pixelformat);
+	bool compressed = isPixelFormatCompressed(pixelformat);
 
 	// This shouldn't be needed for glTexStorage, but some drivers don't follow
 	// the spec apparently.
 	// https://stackoverflow.com/questions/13859061/does-an-immutable-texture-need-a-gl-texture-max-level
-	if (GLAD_VERSION_1_2 || GLAD_ES_VERSION_3_0)
-		glTexParameteri(gltarget, GL_TEXTURE_MAX_LEVEL, levels - 1);
+	glTexParameteri(gltarget, GL_TEXTURE_MAX_LEVEL, levels - 1);
 
 	if (fmt.swizzled)
 	{
@@ -1220,14 +1222,30 @@ bool OpenGL::rawTexStorage(TextureType target, int levels, PixelFormat pixelform
 					if (target == TEXTURE_CUBE)
 						gltarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
 
-					glTexImage2D(gltarget, level, fmt.internalformat, w, h, 0,
-					             fmt.externalformat, fmt.type, nullptr);
+					if (compressed)
+					{
+						size_t mipsize = faces * getPixelFormatSliceSize(pixelformat, w, h);
+						glCompressedTexImage2D(gltarget, level, fmt.internalformat, w, h, 0, mipsize, nullptr);
+					}
+					else
+					{
+						glTexImage2D(gltarget, level, fmt.internalformat, w, h, 0,
+						             fmt.externalformat, fmt.type, nullptr);
+					}
 				}
 			}
 			else if (target == TEXTURE_2D_ARRAY || target == TEXTURE_VOLUME)
 			{
-				glTexImage3D(gltarget, level, fmt.internalformat, w, h, d,
-				             0, fmt.externalformat, fmt.type, nullptr);
+				if (compressed)
+				{
+					size_t mipsize = d * getPixelFormatSliceSize(pixelformat, w, h);
+					glCompressedTexImage3D(gltarget, level, fmt.internalformat, w, h, d, 0, mipsize, nullptr);
+				}
+				else
+				{
+					glTexImage3D(gltarget, level, fmt.internalformat, w, h, d,
+					             0, fmt.externalformat, fmt.type, nullptr);
+				}
 			}
 
 			w = std::max(w / 2, 1);

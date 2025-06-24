@@ -34,8 +34,7 @@
 #endif
 
 // SDL
-#include <SDL_loadso.h>
-#include <SDL_version.h>
+#include <SDL3/SDL_loadso.h>
 
 // STL
 #include <vector>
@@ -241,6 +240,30 @@ int w_openFile(lua_State *L)
 	try
 	{
 		t = instance()->openFile(filename, mode);
+	}
+	catch (love::Exception &e)
+	{
+		return luax_ioError(L, "%s", e.what());
+	}
+
+	luax_pushtype(L, t);
+	t->release();
+	return 1;
+}
+
+int w_openNativeFile(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	const char *modestr = luaL_checkstring(L, 2);
+
+	File::Mode mode = File::MODE_CLOSED;
+	if (!File::getConstant(modestr, mode))
+		return luax_enumerror(L, "file open mode", File::getConstants(mode), modestr);
+
+	File *t = nullptr;
+	try
+	{
+		t = instance()->openNativeFile(path, mode);
 	}
 	catch (love::Exception &e)
 	{
@@ -934,8 +957,10 @@ int extloader(lua_State *L)
 		}
 	}
 
-	void *handle = nullptr;
+	SDL_SharedObject *handle = nullptr;
 	auto *inst = instance();
+
+	std::string loaderror = "";
 
 #ifdef LOVE_ANDROID
 	// Specifically Android, look the library path based on getCRequirePath first
@@ -952,6 +977,7 @@ int extloader(lua_State *L)
 
 	if (!handle)
 	{
+		loaderror += std::string(" ") + std::string(SDL_GetError());
 #endif // LOVE_ANDROID
 
 	for (const std::string &el : inst->getCRequirePath())
@@ -977,6 +1003,8 @@ int extloader(lua_State *L)
 			// Can fail, for instance if it turned out the source was a zip
 			if (handle)
 				break;
+			else
+				loaderror += std::string(" ") + std::string(SDL_GetError());
 		}
 
 		if (handle)
@@ -989,18 +1017,13 @@ int extloader(lua_State *L)
 
 	if (!handle)
 	{
-		lua_pushfstring(L, "\n\tno file '%s' in LOVE paths.", tokenized_name.c_str());
+		lua_pushfstring(L, "\n\tno valid C library '%s' in LOVE paths.%s", tokenized_name.c_str(), loaderror.c_str());
 		return 1;
 	}
 
 	// We look for both loveopen_ and luaopen_, so libraries with specific love support
 	// can tell when they've been loaded by love.
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	SDL_FunctionPointer func = nullptr;
-#else
-	void *func = nullptr;
-#endif
-	func = SDL_LoadFunction(handle, ("loveopen_" + tokenized_function).c_str());
+	SDL_FunctionPointer func = SDL_LoadFunction(handle, ("loveopen_" + tokenized_function).c_str());
 	if (!func)
 		func = SDL_LoadFunction(handle, ("luaopen_" + tokenized_function).c_str());
 
@@ -1033,6 +1056,7 @@ static const luaL_Reg functions[] =
 	{ "unmountFullPath", w_unmountFullPath },
 	{ "unmountCommonPath", w_unmountCommonPath },
 	{ "openFile", w_openFile },
+	{ "openNativeFile", w_openNativeFile },
 	{ "getFullCommonPath", w_getFullCommonPath },
 	{ "getWorkingDirectory", w_getWorkingDirectory },
 	{ "getUserDirectory", w_getUserDirectory },

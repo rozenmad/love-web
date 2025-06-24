@@ -453,25 +453,60 @@ void Shader::compileFromGLSLang(id<MTLDevice> device, const glslang::TProgram &p
 
 		if (stageindex == SHADERSTAGE_VERTEX)
 		{
-			int nextattributeindex = ATTRIB_MAX_ENUM;
+			uint64 usedInputLocationBits = 0;
 
+			// First pass: record active input locations that were set to a valid value
+			// beforehand.
 			for (const auto &var : interfacevars)
 			{
-				spv::StorageClass storage = msl.get_storage_class(var);
-				const std::string &name = msl.get_name(var);
-
-				if (storage == spv::StorageClassInput)
+				if (msl.get_storage_class(var) == spv::StorageClassInput)
 				{
-					int index = 0;
+					const std::string &name = msl.get_name(var);
 
-					BuiltinVertexAttribute builtinattribute;
-					if (graphics::getConstant(name.c_str(), builtinattribute))
-						index = (int) builtinattribute;
-					else
-						index = nextattributeindex++;
+					auto it = reflection.vertexInputs.find(name);
+					if (it != reflection.vertexInputs.end() && it->second >= 0)
+						usedInputLocationBits |= (1ull << it->second);
+				}
+			}
 
-					msl.set_decoration(var, spv::DecorationLocation, index);
-					attributes[name] = msl.get_decoration(var, spv::DecorationLocation);
+			// Second pass: set input locations which were not part of the above pass,
+			// they need to not overlap. And then store all input locations for later use.
+			for (const auto &var : interfacevars)
+			{
+				if (msl.get_storage_class(var) == spv::StorageClassInput)
+				{
+					const std::string &name = msl.get_name(var);
+
+					auto it = reflection.vertexInputs.find(name);
+					if (it == reflection.vertexInputs.end() || it->second < 0)
+					{
+						for (int i = 0; i < 64; i++)
+						{
+							if ((usedInputLocationBits & (1ull << i)) == 0)
+							{
+								usedInputLocationBits |= (1ull << i);
+								msl.set_decoration(var, spv::DecorationLocation, i);
+								break;
+							}
+						}
+					}
+
+					int location = (int)msl.get_decoration(var, spv::DecorationLocation);
+					DataBaseType basetype = DATA_BASETYPE_FLOAT;
+
+					switch (msl.get_type_from_variable(var).basetype)
+					{
+					case spirv_cross::SPIRType::Int:
+						basetype = DATA_BASETYPE_INT;
+						break;
+					case spirv_cross::SPIRType::UInt:
+						basetype = DATA_BASETYPE_UINT;
+						break;
+					default:
+						break;
+					}
+
+					attributes[name] = { location, basetype };
 				}
 			}
 
@@ -655,11 +690,11 @@ void Shader::compileFromGLSLang(id<MTLDevice> device, const glslang::TProgram &p
 		{
 		case UNIFORM_SAMPLER:
 		case UNIFORM_STORAGETEXTURE:
-			sendTextures(info, &activeTextures[info->resourceIndex], info->count);
+			sendTextures(info, &activeTextures[info->resourceIndex], info->count, true);
 			break;
 		case UNIFORM_TEXELBUFFER:
 		case UNIFORM_STORAGEBUFFER:
-			sendBuffers(info, &activeBuffers[info->resourceIndex], info->count);
+			sendBuffers(info, &activeBuffers[info->resourceIndex], info->count, true);
 			break;
 		default:
 			break;
@@ -697,7 +732,7 @@ void Shader::attach()
 int Shader::getVertexAttributeIndex(const std::string &name)
 {
 	const auto it = attributes.find(name);
-	return it != attributes.end() ? it->second : -1;
+	return it != attributes.end() ? it->second.index : -1;
 }
 
 const Shader::UniformInfo *Shader::getUniformInfo(BuiltinUniform builtin) const
@@ -721,139 +756,47 @@ void Shader::updateUniform(const UniformInfo *info, int count)
 	copyToUniformBuffer(info, info->data, dst, count);
 }
 
-void Shader::sendTextures(const UniformInfo *info, love::graphics::Texture **textures, int count)
+void Shader::applyTexture(const UniformInfo *info, int i, love::graphics::Texture *texture, UniformType /*basetype*/, bool isdefault)
 { @autoreleasepool {
-	if (info->baseType != UNIFORM_SAMPLER && info->baseType != UNIFORM_STORAGETEXTURE)
+	if (info->location < 0)
 		return;
 
-	if (current == this)
-		Graphics::flushBatchedDrawsGlobal();
+	int bindingindex = info->location + i;
+	if (bindingindex < 0)
+		return;
 
-	count = std::min(count, info->count);
-
-	for (int i = 0; i < count; i++)
+	auto &binding = textureBindings[bindingindex];
+	if (isdefault && (binding.access & ACCESS_WRITE) != 0)
 	{
-		love::graphics::Texture *tex = textures[i];
-		bool isdefault = tex == nullptr;
-
-		if (tex != nullptr)
-		{
-			if (!validateTexture(info, tex, false))
-				continue;
-		}
-		else
-		{
-			auto gfx = Graphics::getInstance();
-			tex = gfx->getDefaultTexture(info->textureType, info->dataBaseType, info->isDepthSampler);
-		}
-
-		tex->retain();
-
-		int resourceindex = info->resourceIndex + i;
-
-		if (activeTextures[resourceindex] != nullptr)
-			activeTextures[resourceindex]->release();
-
-		activeTextures[resourceindex] = tex;
-
-		if (info->location < 0)
-			continue;
-
-		int bindingindex = info->location + i;
-		if (bindingindex < 0)
-			continue;
-
-		auto &binding = textureBindings[bindingindex];
-		if (isdefault && (binding.access & ACCESS_WRITE) != 0)
-		{
-			binding.texture = nil;
-			binding.samplerTexture = nullptr;
-		}
-		else
-		{
-			binding.texture = getMTLTexture(tex);
-			binding.samplerTexture = tex;
-		}
+		binding.texture = nil;
+		binding.samplerTexture = nullptr;
+	}
+	else
+	{
+		binding.texture = getMTLTexture(texture);
+		binding.samplerTexture = texture;
 	}
 }}
 
-void Shader::sendBuffers(const UniformInfo *info, love::graphics::Buffer **buffers, int count)
-{
-	bool texelbinding = info->baseType == UNIFORM_TEXELBUFFER;
-	bool storagebinding = info->baseType == UNIFORM_STORAGEBUFFER;
-
-	if (!texelbinding && !storagebinding)
+void Shader::applyBuffer(const UniformInfo *info, int i, love::graphics::Buffer *buffer, UniformType basetype, bool isdefault)
+{ @autoreleasepool {
+	if (info->location < 0)
 		return;
 
-	if (current == this)
-		Graphics::flushBatchedDrawsGlobal();
-
-	count = std::min(count, info->count);
-
-	for (int i = 0; i < count; i++)
+	int bindingindex = info->location + i;
+	if (basetype == UNIFORM_TEXELBUFFER && bindingindex >= 0)
 	{
-		love::graphics::Buffer *buffer = buffers[i];
-		bool isdefault = buffer == nullptr;
-
-		if (buffer != nullptr)
-		{
-			if (!validateBuffer(info, buffer, false))
-				continue;
-		}
+		textureBindings[bindingindex].texture = getMTLTexture(buffer);
+	}
+	else if (basetype == UNIFORM_STORAGEBUFFER && bindingindex >= 0)
+	{
+		auto &binding = bufferBindings[bindingindex];
+		if (isdefault && (binding.access & ACCESS_WRITE) != 0)
+			binding.buffer = nil;
 		else
-		{
-			auto gfx = Graphics::getInstance();
-			if (texelbinding)
-				buffer = gfx->getDefaultTexelBuffer(info->dataBaseType);
-			else
-				buffer = gfx->getDefaultStorageBuffer();
-		}
-
-		buffer->retain();
-
-		int resourceindex = info->resourceIndex + i;
-
-		if (activeBuffers[resourceindex] != nullptr)
-			activeBuffers[resourceindex]->release();
-
-		activeBuffers[resourceindex] = buffer;
-
-		if (info->location < 0)
-			continue;
-
-		int bindingindex = info->location + i;
-		if (texelbinding && bindingindex >= 0)
-		{
-			textureBindings[bindingindex].texture = getMTLTexture(buffer);
-		}
-		else if (storagebinding && bindingindex >= 0)
-		{
-			auto &binding = bufferBindings[bindingindex];
-			if (isdefault && (binding.access & ACCESS_WRITE) != 0)
-				binding.buffer = nil;
-			else
-				binding.buffer = getMTLBuffer(buffer);
-		}
+			binding.buffer = getMTLBuffer(buffer);
 	}
-}
-
-void Shader::setVideoTextures(love::graphics::Texture *ytexture, love::graphics::Texture *cbtexture, love::graphics::Texture *crtexture)
-{
-	const BuiltinUniform builtins[3] = {
-		BUILTIN_TEXTURE_VIDEO_Y,
-		BUILTIN_TEXTURE_VIDEO_CB,
-		BUILTIN_TEXTURE_VIDEO_CR,
-	};
-
-	love::graphics::Texture *textures[3] = {ytexture, cbtexture, crtexture};
-
-	for (int i = 0; i < 3; i++)
-	{
-		const UniformInfo *info = builtinUniformInfo[builtins[i]];
-		if (info != nullptr)
-			sendTextures(info, &textures[i], 1);
-	}
-}
+}}
 
 id<MTLRenderPipelineState> Shader::getCachedRenderPipeline(graphics::Graphics *gfx, const RenderPipelineKey &key)
 {
@@ -882,15 +825,17 @@ id<MTLRenderPipelineState> Shader::getCachedRenderPipeline(graphics::Graphics *g
 		auto formatdesc = Metal::convertPixelFormat(device, format);
 		attachment.pixelFormat = formatdesc.format;
 
-		if (key.blend.enable && gfx->isPixelFormatSupported(format, PIXELFORMATUSAGEFLAGS_BLEND))
+		BlendState blend = BlendState::fromKey(key.blendStateKey);
+
+		if (blend.enable && gfx->isPixelFormatSupported(format, PIXELFORMATUSAGEFLAGS_BLEND))
 		{
 			attachment.blendingEnabled = YES;
-			attachment.sourceRGBBlendFactor = getMTLBlendFactor(key.blend.srcFactorRGB);
-			attachment.destinationRGBBlendFactor = getMTLBlendFactor(key.blend.dstFactorRGB);
-			attachment.rgbBlendOperation = getMTLBlendOperation(key.blend.operationRGB);
-			attachment.sourceAlphaBlendFactor = getMTLBlendFactor(key.blend.srcFactorA);
-			attachment.destinationAlphaBlendFactor = getMTLBlendFactor(key.blend.dstFactorA);
-			attachment.alphaBlendOperation = getMTLBlendOperation(key.blend.operationA);
+			attachment.sourceRGBBlendFactor = getMTLBlendFactor(blend.srcFactorRGB);
+			attachment.destinationRGBBlendFactor = getMTLBlendFactor(blend.dstFactorRGB);
+			attachment.rgbBlendOperation = getMTLBlendOperation(blend.operationRGB);
+			attachment.sourceAlphaBlendFactor = getMTLBlendFactor(blend.srcFactorA);
+			attachment.destinationAlphaBlendFactor = getMTLBlendFactor(blend.dstFactorA);
+			attachment.alphaBlendOperation = getMTLBlendOperation(blend.operationA);
 		}
 
 		MTLColorWriteMask writeMask = MTLColorWriteMaskNone;
@@ -923,12 +868,14 @@ id<MTLRenderPipelineState> Shader::getCachedRenderPipeline(graphics::Graphics *g
 		}
 	}
 
+	VertexAttributes attributes;
+	gfx->findVertexAttributes(key.vertexAttributesID, attributes);
+
 	MTLVertexDescriptor *vertdesc = [MTLVertexDescriptor vertexDescriptor];
-	const auto &attributes = key.vertexAttributes;
 
 	for (const auto &pair : this->attributes)
 	{
-		int i = pair.second;
+		int i = pair.second.index;
 		uint32 bit = 1u << i;
 
 		if (attributes.enableBits & bit)
@@ -950,8 +897,26 @@ id<MTLRenderPipelineState> Shader::getCachedRenderPipeline(graphics::Graphics *g
 		}
 		else
 		{
-			vertdesc.attributes[i].format = MTLVertexFormatFloat4;
-			vertdesc.attributes[i].offset = 0;
+			switch (pair.second.baseType)
+			{
+			case DATA_BASETYPE_INT:
+				vertdesc.attributes[i].format = MTLVertexFormatInt4;
+				vertdesc.attributes[i].offset = sizeof(float) * 4;
+				break;
+			case DATA_BASETYPE_UINT:
+				vertdesc.attributes[i].format = MTLVertexFormatUInt4;
+				vertdesc.attributes[i].offset = sizeof(float) * 4;
+				break;
+			case DATA_BASETYPE_FLOAT:
+				vertdesc.attributes[i].format = MTLVertexFormatFloat4;
+				if (i == ATTRIB_COLOR)
+					vertdesc.attributes[i].offset = sizeof(float) * 4 * 2;
+				else
+					vertdesc.attributes[i].offset = 0;
+			default:
+				break;
+			}
+
 			vertdesc.attributes[i].bufferIndex = DEFAULT_VERTEX_BUFFER_BINDING;
 
 			vertdesc.layouts[DEFAULT_VERTEX_BUFFER_BINDING].stride = sizeof(float) * 4;

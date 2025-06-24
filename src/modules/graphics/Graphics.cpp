@@ -44,6 +44,7 @@ namespace graphics
 {
 
 static bool gammaCorrect = false;
+static bool lowPowerPreferred = false;
 static bool debugMode = false;
 static bool debugModeQueried = false;
 
@@ -110,20 +111,28 @@ namespace opengl { extern love::graphics::Graphics *createInstance(); }
 namespace metal { extern love::graphics::Graphics *createInstance(); }
 #endif
 #ifdef LOVE_GRAPHICS_VULKAN
-namespace vulkan { extern love::graphics::Graphics* createInstance(); }
+namespace vulkan { extern love::graphics::Graphics *createInstance(); }
 #endif
 
 static const Renderer rendererOrder[] = {
 	RENDERER_METAL,
+#if defined(LOVE_ANDROID) || (defined(LOVE_WINDOWS) && defined(_M_ARM64))
+	// Don't prioritize Vulkan by default yet on Android - it needs more testing.
+	// Also don't prioritize Vulkan on Windows ARM64 because it doesn't work.
+	// See https://github.com/love2d/love/issues/2196
 	RENDERER_OPENGL,
 	RENDERER_VULKAN,
+#else
+	RENDERER_VULKAN,
+	RENDERER_OPENGL,
+#endif
 };
 
 static std::vector<Renderer> defaultRenderers =
 {
 	RENDERER_METAL,
-	RENDERER_OPENGL,
 	RENDERER_VULKAN,
+	RENDERER_OPENGL,
 };
 
 static std::vector<Renderer> _renderers = defaultRenderers;
@@ -141,6 +150,16 @@ const std::vector<Renderer> &getRenderers()
 void setRenderers(const std::vector<Renderer> &renderers)
 {
 	_renderers = renderers;
+}
+
+void setLowPowerPreferred(bool preferred)
+{
+	lowPowerPreferred = preferred;
+}
+
+bool isLowPowerPreferred()
+{
+	return lowPowerPreferred;
 }
 
 Graphics *Graphics::createInstance()
@@ -212,8 +231,10 @@ Graphics::Graphics(const char *name)
 	states.reserve(10);
 	states.push_back(DisplayState());
 
+	noAttributesID = registerVertexAttributes(VertexAttributes());
+
 	if (!Shader::initialize())
-		throw love::Exception("Shader support failed to initialize!");
+		throw love::Exception("Shader support failed to initialize.");
 }
 
 Graphics::~Graphics()
@@ -1119,13 +1140,40 @@ void Graphics::setRenderTargets(const RenderTargets &rts)
 
 		PixelFormat dsformat = PIXELFORMAT_STENCIL8;
 		if (wantsdepth && wantsstencil)
-			dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
-		else if (wantsdepth && isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
-			dsformat = PIXELFORMAT_DEPTH24_UNORM;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Combined depth and stencil buffers are not supported on this system.");
+		}
 		else if (wantsdepth)
-			dsformat = PIXELFORMAT_DEPTH16_UNORM;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH16_UNORM, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH16_UNORM;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Depth buffers are not supported on this system.");
+		}
 		else if (wantsstencil)
-			dsformat = PIXELFORMAT_STENCIL8;
+		{
+			if (isPixelFormatSupported(PIXELFORMAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH24_UNORM_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH24_UNORM_STENCIL8;
+			else if (isPixelFormatSupported(PIXELFORMAT_DEPTH32_FLOAT_STENCIL8, PIXELFORMATUSAGEFLAGS_RENDERTARGET))
+				dsformat = PIXELFORMAT_DEPTH32_FLOAT_STENCIL8;
+			else
+				throw love::Exception("Stencil buffers are not supported on this system.");
+		}
 
 		// We want setRenderTargetsInternal to have a pointer to the temporary RT,
 		// but we don't want to directly store it in the main graphics state.
@@ -1411,6 +1459,29 @@ void Graphics::updatePendingReadbacks()
 			pendingReadbacks.pop_back();
 		}
 	}
+}
+
+VertexAttributesID Graphics::registerVertexAttributes(const VertexAttributes &attributes)
+{
+	for (size_t i = 0; i < vertexAttributesDatabase.size(); i++)
+	{
+		if (attributes == vertexAttributesDatabase[i])
+			return { (int)i + 1 };
+	}
+
+	vertexAttributesDatabase.push_back(attributes);
+	return { (int)vertexAttributesDatabase.size() };
+}
+
+bool Graphics::findVertexAttributes(VertexAttributesID id, VertexAttributes &attributes)
+{
+	int index = id.id - 1;
+
+	if (index < 0 || index >= (int)vertexAttributesDatabase.size())
+		return false;
+
+	attributes = vertexAttributesDatabase[index];
+	return true;
 }
 
 void Graphics::intersectScissor(const Rect &rect)
@@ -2022,14 +2093,23 @@ void Graphics::flushBatchedDraws()
 	VertexAttributes attributes;
 	BufferBindings buffers;
 
+	VertexAttributesID attributesID = sbstate.attributesIDs[(int)sbstate.formats[0]][(int)sbstate.formats[1]];
+
+	if (!findVertexAttributes(attributesID, attributes))
+	{
+		for (int i = 0; i < 2; i++)
+			attributes.setCommonFormat(sbstate.formats[i], (uint8)i);
+		
+		attributesID = registerVertexAttributes(attributes);
+		sbstate.attributesIDs[(int)sbstate.formats[0]][(int)sbstate.formats[1]] = attributesID;
+	}
+
 	size_t usedsizes[3] = {0, 0, 0};
 
 	for (int i = 0; i < 2; i++)
 	{
 		if (sbstate.formats[i] == CommonFormat::NONE)
 			continue;
-
-		attributes.setCommonFormat(sbstate.formats[i], (uint8) i);
 
 		usedsizes[i] = getFormatStride(sbstate.formats[i]) * sbstate.vertexCount;
 
@@ -2053,7 +2133,7 @@ void Graphics::flushBatchedDraws()
 	{
 		usedsizes[2] = sizeof(uint16) * sbstate.indexCount;
 
-		DrawIndexedCommand cmd(&attributes, &buffers, sbstate.indexBuffer);
+		DrawIndexedCommand cmd(attributesID, &buffers, sbstate.indexBuffer);
 		cmd.primitiveType = sbstate.primitiveMode;
 		cmd.indexCount = sbstate.indexCount;
 		cmd.indexType = INDEX_UINT16;
@@ -2065,7 +2145,7 @@ void Graphics::flushBatchedDraws()
 	}
 	else
 	{
-		DrawCommand cmd(&attributes, &buffers);
+		DrawCommand cmd(attributesID, &buffers);
 		cmd.primitiveType = sbstate.primitiveMode;
 		cmd.vertexStart = 0;
 		cmd.vertexCount = sbstate.vertexCount;
@@ -2156,10 +2236,8 @@ void Graphics::drawFromShader(PrimitiveType primtype, int vertexcount, int insta
 
 	Shader::current->validateDrawState(primtype, maintexture);
 
-	VertexAttributes attributes;
 	BufferBindings buffers;
-
-	DrawCommand cmd(&attributes, &buffers);
+	DrawCommand cmd(noAttributesID, &buffers);
 
 	cmd.primitiveType = primtype;
 	cmd.vertexCount = vertexcount;
@@ -2190,10 +2268,8 @@ void Graphics::drawFromShader(Buffer *indexbuffer, int indexcount, int instancec
 
 	Shader::current->validateDrawState(PRIMITIVE_TRIANGLES, maintexture);
 
-	VertexAttributes attributes;
 	BufferBindings buffers;
-
-	DrawIndexedCommand cmd(&attributes, &buffers, indexbuffer);
+	DrawIndexedCommand cmd(noAttributesID, &buffers, indexbuffer);
 
 	cmd.primitiveType = PRIMITIVE_TRIANGLES;
 	cmd.indexCount = indexcount;
@@ -2221,10 +2297,8 @@ void Graphics::drawFromShaderIndirect(PrimitiveType primtype, Buffer *indirectar
 
 	Shader::current->validateDrawState(primtype, maintexture);
 
-	VertexAttributes attributes;
 	BufferBindings buffers;
-
-	DrawCommand cmd(&attributes, &buffers);
+	DrawCommand cmd(noAttributesID, &buffers);
 
 	cmd.primitiveType = primtype;
 	cmd.indirectBuffer = indirectargs;
@@ -2248,10 +2322,8 @@ void Graphics::drawFromShaderIndirect(Buffer *indexbuffer, Buffer *indirectargs,
 
 	Shader::current->validateDrawState(PRIMITIVE_TRIANGLES, maintexture);
 
-	VertexAttributes attributes;
 	BufferBindings buffers;
-
-	DrawIndexedCommand cmd(&attributes, &buffers, indexbuffer);
+	DrawIndexedCommand cmd(noAttributesID, &buffers, indexbuffer);
 
 	cmd.primitiveType = PRIMITIVE_TRIANGLES;
 	cmd.indexType = getIndexDataType(indexbuffer->getDataMember(0).decl.format);
@@ -2881,7 +2953,7 @@ STRINGMAP_CLASS_END(Graphics, Graphics::LineJoin, Graphics::LINE_JOIN_MAX_ENUM, 
 
 STRINGMAP_CLASS_BEGIN(Graphics, Graphics::Feature, Graphics::FEATURE_MAX_ENUM, feature)
 {
-	{ "multirendertargetformats", Graphics::FEATURE_MULTI_RENDER_TARGET_FORMATS },
+	{ "multicanvasformats",       Graphics::FEATURE_MULTI_RENDER_TARGET_FORMATS },
 	{ "clampzero",                Graphics::FEATURE_CLAMP_ZERO           },
 	{ "clampone",                 Graphics::FEATURE_CLAMP_ONE            },
 	{ "lighten",                  Graphics::FEATURE_LIGHTEN              },
@@ -2909,7 +2981,7 @@ STRINGMAP_CLASS_BEGIN(Graphics, Graphics::SystemLimit, Graphics::LIMIT_MAX_ENUM,
 	{ "threadgroupsx",           Graphics::LIMIT_THREADGROUPS_X             },
 	{ "threadgroupsy",           Graphics::LIMIT_THREADGROUPS_Y             },
 	{ "threadgroupsz",           Graphics::LIMIT_THREADGROUPS_Z             },
-	{ "rendertargets",           Graphics::LIMIT_RENDER_TARGETS             },
+	{ "multicanvas",             Graphics::LIMIT_RENDER_TARGETS             },
 	{ "texturemsaa",             Graphics::LIMIT_TEXTURE_MSAA               },
 	{ "anisotropy",              Graphics::LIMIT_ANISOTROPY                 },
 }

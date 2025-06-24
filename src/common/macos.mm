@@ -26,8 +26,10 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#if __has_include(<SDL3/SDL.h>)
+#include <SDL3/SDL.h>
+#else
 #include <SDL.h>
-#if !SDL_VERSION_ATLEAST(3, 0, 0)
 #include <SDL_syswm.h>
 #endif
 
@@ -129,7 +131,7 @@ void setWindowSRGBColorSpace(SDL_Window *window)
 		{
 #if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_PropertiesID props = SDL_GetWindowProperties(window);
-			NSWindow *window = (__bridge NSWindow *) SDL_GetProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+			NSWindow *window = (__bridge NSWindow *) SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
 			window.colorSpace = [NSColorSpace sRGBColorSpace];
 #else
 			SDL_SysWMinfo info = {};

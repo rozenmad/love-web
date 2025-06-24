@@ -97,6 +97,8 @@ Font::Font(love::font::Rasterizer *r, const SamplerState &s)
 		pixelFormat = PIXELFORMAT_RGBA8_UNORM;
 #endif
 
+	vertexAttributesID = gfx->registerVertexAttributes(VertexAttributes(vertexFormat, 0));
+
 	loadVolatile();
 	++fontCount;
 }
@@ -515,8 +517,12 @@ std::vector<Font::DrawCommand> Font::generateVerticesFormatted(const love::font:
 				auto start = text.cps.begin() + range.getOffset();
 				auto end = start + range.getSize();
 				float numspaces = std::count(start, end, ' ');
+
+				if (text.cps[range.last] == ' ')
+					--numspaces;
+
 				if (width < wrap && numspaces >= 1)
-					extraspacing = floorf((wrap - width) / numspaces);
+					extraspacing = (wrap - width) / numspaces;
 				else
 					extraspacing = 0.0f;
 				break;

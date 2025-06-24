@@ -45,7 +45,7 @@
 #include <cstdio>
 
 #ifdef LOVE_IOS
-#include <SDL_syswm.h>
+#include <SDL3/SDL_video.h>
 #endif
 
 namespace love
@@ -282,14 +282,12 @@ GLuint Graphics::getSystemBackbufferFBO() const
 {
 #ifdef LOVE_IOS
 	// Hack: iOS uses a custom FBO.
-	SDL_SysWMinfo info = {};
-	SDL_VERSION(&info.version);
-	SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &info);
-
-	if (info.info.uikit.resolveFramebuffer != 0)
-		return info.info.uikit.resolveFramebuffer;
+	SDL_PropertiesID props = SDL_GetWindowProperties(SDL_GL_GetCurrentWindow());
+	GLuint resolveframebuffer = (GLuint)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_UIKIT_OPENGL_RESOLVE_FRAMEBUFFER_NUMBER, 0);
+	if (resolveframebuffer != 0)
+		return resolveframebuffer;
 	else
-		return info.info.uikit.framebuffer;
+		return (GLuint)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0);
 #else
 	return 0;
 #endif
@@ -569,8 +567,11 @@ bool Graphics::dispatch(love::graphics::Shader *s, love::graphics::Buffer *indir
 
 void Graphics::draw(const DrawCommand &cmd)
 {
+	VertexAttributes attributes;
+	findVertexAttributes(cmd.attributesID, attributes);
+
 	gl.prepareDraw(this);
-	gl.setVertexAttributes(*cmd.attributes, *cmd.buffers);
+	gl.setVertexAttributes(attributes, *cmd.buffers);
 	gl.bindTextureToUnit(cmd.texture, 0, false);
 	gl.setCullMode(cmd.cullMode);
 
@@ -591,8 +592,11 @@ void Graphics::draw(const DrawCommand &cmd)
 
 void Graphics::draw(const DrawIndexedCommand &cmd)
 {
+	VertexAttributes attributes;
+	findVertexAttributes(cmd.attributesID, attributes);
+
 	gl.prepareDraw(this);
-	gl.setVertexAttributes(*cmd.attributes, *cmd.buffers);
+	gl.setVertexAttributes(attributes, *cmd.buffers);
 	gl.bindTextureToUnit(cmd.texture, 0, false);
 	gl.setCullMode(cmd.cullMode);
 
@@ -640,10 +644,13 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
 	}
 }
 
-void Graphics::drawQuads(int start, int count, const VertexAttributes &attributes, const BufferBindings &buffers, love::graphics::Texture *texture)
+void Graphics::drawQuads(int start, int count, VertexAttributesID attributesID, const BufferBindings &buffers, love::graphics::Texture *texture)
 {
 	const int MAX_VERTICES_PER_DRAW = LOVE_UINT16_MAX;
 	const int MAX_QUADS_PER_DRAW    = MAX_VERTICES_PER_DRAW / 4;
+
+	VertexAttributes attributes;
+	findVertexAttributes(attributesID, attributes);
 
 	gl.prepareDraw(this);
 	gl.bindTextureToUnit(texture, 0, false);
@@ -782,7 +789,7 @@ void Graphics::setRenderTargetsInternal(const RenderTargets &rts, int pixelw, in
 	// Re-apply the scissor if it was active, since the rectangle passed to
 	// glScissor is affected by the viewport dimensions.
 	if (state.scissor)
-		setScissor(state.scissorRect);
+		setScissor(state.scissorRect, !iswindow);
 
 	// Make sure the correct sRGB setting is used when drawing to the textures.
 	if (GLAD_VERSION_1_0 || GLAD_EXT_sRGB_write_control)
@@ -1282,10 +1289,9 @@ void Graphics::present(void *screenshotCallbackData)
 
 #ifdef LOVE_IOS
 	// Hack: SDL's color renderbuffer must be bound when swapBuffers is called.
-	SDL_SysWMinfo info = {};
-	SDL_VERSION(&info.version);
-	SDL_GetWindowWMInfo(SDL_GL_GetCurrentWindow(), &info);
-	glBindRenderbuffer(GL_RENDERBUFFER, info.info.uikit.colorbuffer);
+	SDL_PropertiesID props = SDL_GetWindowProperties(SDL_GL_GetCurrentWindow());
+	GLuint colorbuffer = (GLuint)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_UIKIT_OPENGL_RENDERBUFFER_NUMBER, 0);
+	glBindRenderbuffer(GL_RENDERBUFFER, colorbuffer);
 #endif
 
 	for (StreamBuffer *buffer : batchedDrawState.vb)
@@ -1318,7 +1324,7 @@ int Graphics::getBackbufferMSAA() const
 	return internalBackbuffer.get() ? internalBackbuffer->getMSAA() : 0;
 }
 
-void Graphics::setScissor(const Rect &rect)
+void Graphics::setScissor(const Rect &rect, bool rtActive)
 {
 	flushBatchedDraws();
 
@@ -1336,10 +1342,15 @@ void Graphics::setScissor(const Rect &rect)
 	glrect.h = (int) (rect.h * dpiscale);
 
 	// OpenGL's reversed y-coordinate is compensated for in OpenGL::setScissor.
-	gl.setScissor(glrect, isRenderTargetActive());
+	gl.setScissor(glrect, rtActive);
 
 	state.scissor = true;
 	state.scissorRect = rect;
+}
+
+void Graphics::setScissor(const Rect &rect)
+{
+	setScissor(rect, isRenderTargetActive());
 }
 
 void Graphics::setScissor()

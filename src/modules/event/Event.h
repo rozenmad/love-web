@@ -31,7 +31,7 @@
 #include "thread/threads.h"
 
 // C++
-#include <queue>
+#include <deque>
 #include <vector>
 
 namespace love
@@ -55,21 +55,45 @@ class Event : public Module
 {
 public:
 
+	typedef void (*ModalDrawCallback)(void *context, Variant *returnValue0, Variant *returnValue1);
+	typedef void (*ModalCleanupCallback)(void *context);
+
+	struct ModalDrawData
+	{
+		ModalDrawCallback draw;
+		ModalCleanupCallback cleanup;
+		void *context;
+	};
+
 	virtual ~Event();
 
 	void push(Message *msg);
 	bool poll(Message *&msg);
 	virtual void clear();
 
-	virtual void pump() = 0;
+	virtual void pump(float waitTimeout = 0.0f) = 0;
 	virtual Message *wait() = 0;
+
+	void setModalDrawData(const ModalDrawData &data);
+	const ModalDrawData &getModalDrawData() const { return modalDrawData; }
+
+	void setDefaultModalDrawData(const ModalDrawData &data);
+
+	void modalDraw();
 
 protected:
 
 	Event(const char *name);
 
+	void push(Message *msg, bool pushFront);
+
+	ModalDrawData modalDrawData;
+	ModalDrawData defaultModalDrawData;
+	std::string deferredExceptionMessage;
+	Variant deferredReturnValues[2];
+
 	love::thread::MutexRef mutex;
-	std::queue<Message *> queue;
+	std::deque<Message *> queue;
 
 }; // Event
 

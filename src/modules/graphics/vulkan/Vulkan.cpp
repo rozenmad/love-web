@@ -47,6 +47,38 @@ void Vulkan::resetShaderSwitches()
 	numShaderSwitches = 0;
 }
 
+const char *Vulkan::getErrorString(VkResult result)
+{
+	switch (result)
+	{
+	case VK_SUCCESS: return "success";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "out of host memory";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "out of device graphics memory";
+	case VK_ERROR_INITIALIZATION_FAILED: return "initialization failed";
+	case VK_ERROR_DEVICE_LOST: return "device lost";
+	case VK_ERROR_MEMORY_MAP_FAILED: return "memory map failed";
+	case VK_ERROR_LAYER_NOT_PRESENT: return "layer not present";
+	case VK_ERROR_EXTENSION_NOT_PRESENT: return "extension not present";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "feature not present";
+	case VK_ERROR_INCOMPATIBLE_DRIVER: return "incompatible driver";
+	case VK_ERROR_TOO_MANY_OBJECTS: return "too many objects";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "format not supported";
+	case VK_ERROR_FRAGMENTED_POOL: return "fragmented pool";
+	case VK_ERROR_UNKNOWN: return "unknown error";
+	case VK_ERROR_OUT_OF_POOL_MEMORY: return "out of pool memory";
+	case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "invalid external handle";
+	case VK_ERROR_FRAGMENTATION: return "fragmentation";
+	case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "invalid opaque capture address";
+	case VK_ERROR_SURFACE_LOST_KHR: return "surface lost";
+	case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "native window in use";
+	case VK_ERROR_OUT_OF_DATE_KHR: return "out of date";
+	case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR: return "incompatible display";
+	case VK_ERROR_VALIDATION_FAILED_EXT: return "validation failed";
+	case VK_ERROR_INVALID_SHADER_NV: return "invalid shader";
+	default: return "unhandled error code";
+	}
+}
+
 VkFormat Vulkan::getVulkanVertexFormat(DataFormat format)
 {
 	switch (format)
@@ -277,7 +309,7 @@ TextureFormat Vulkan::getTextureFormat(PixelFormat format)
 		textureFormat.internalFormat = VK_FORMAT_R5G6B5_UNORM_PACK16;
 		break;
 	case PIXELFORMAT_RGB10A2_UNORM:  // LSB->MSB: [r: g: b: a]
-		textureFormat.internalFormat = VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+		textureFormat.internalFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 		break;
 	case PIXELFORMAT_RG11B10_FLOAT:  // LSB->MSB: [r: g: b]
 		textureFormat.internalFormat = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
@@ -754,9 +786,9 @@ VkSamplerMipmapMode Vulkan::getMipMapMode(SamplerState::MipmapFilterMode mode)
 {
 	switch (mode)
 	{
+	case SamplerState::MIPMAP_FILTER_NONE:
 	case SamplerState::MIPMAP_FILTER_NEAREST:
 		return VK_SAMPLER_MIPMAP_MODE_NEAREST;
-	case SamplerState::MIPMAP_FILTER_NONE:
 	case SamplerState::MIPMAP_FILTER_LINEAR:
 	default:
 		return VK_SAMPLER_MIPMAP_MODE_LINEAR;
@@ -778,11 +810,11 @@ VkDescriptorType Vulkan::getDescriptorType(graphics::Shader::UniformType type)
 	case graphics::Shader::UniformType::UNIFORM_STORAGETEXTURE:
 		return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	case graphics::Shader::UniformType::UNIFORM_TEXELBUFFER:
-		return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+		return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
 	case graphics::Shader::UniformType::UNIFORM_STORAGEBUFFER:
 		return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	default:
-		throw love::Exception("unkonwn uniform type");
+		throw love::Exception("unknown uniform type");
 	}
 }
 
@@ -822,88 +854,122 @@ VkIndexType Vulkan::getVulkanIndexBufferType(IndexDataType type)
 	}
 }
 
-static void setImageLayoutTransitionOptions(bool previous, VkImageLayout layout, VkAccessFlags &accessMask, VkPipelineStageFlags &stageFlags)
+void Vulkan::addImageLayoutTransitionOptions(bool previous, bool renderTarget, bool depthStencil, VkImageLayout layout, VkAccessFlags &accessMask, VkPipelineStageFlags &stageFlags)
 {
 	switch (layout)
 	{
 	case VK_IMAGE_LAYOUT_UNDEFINED:
-		accessMask = 0;
+		accessMask |= 0;
 		if (previous)
-			stageFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			stageFlags |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		else
-			stageFlags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+			stageFlags |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_GENERAL:
 		// We use the general image layout for images that are both compute write and readable.
 		// todo: can we optimize this?
-		accessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-		stageFlags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+		accessMask |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+		if (renderTarget)
+		{
+			if (depthStencil)
+			{
+				accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+				stageFlags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			}
+			else
+			{
+				accessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+				stageFlags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			}
+		}
 		break;
 	case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-		accessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		stageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		accessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-		accessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-		stageFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		accessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-		accessMask = VK_ACCESS_SHADER_READ_BIT;
-		stageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		accessMask |= VK_ACCESS_SHADER_READ_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-		accessMask = VK_ACCESS_TRANSFER_READ_BIT;
-		stageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		accessMask |= VK_ACCESS_TRANSFER_READ_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-		accessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		stageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		accessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+		stageFlags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
 		break;
 	case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-		accessMask = 0;
-		stageFlags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		accessMask |= 0;
+		stageFlags |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 		break;
 	default:
 		throw love::Exception("unimplemented image layout");
 	}
 }
 
-void Vulkan::cmdTransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, PixelFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t baseLevel, uint32_t levelCount, uint32_t baseLayer, uint32_t layerCount)
+void Vulkan::cmdTransitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, PixelFormat format, bool renderTarget, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t baseLevel, uint32_t levelCount, uint32_t baseLayer, uint32_t layerCount)
 {
-	VkImageMemoryBarrier barrier{};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.oldLayout = oldLayout;
-	barrier.newLayout = newLayout;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = image;
-	barrier.subresourceRange.baseMipLevel = baseLevel;
-	barrier.subresourceRange.levelCount = levelCount;
-	barrier.subresourceRange.baseArrayLayer = baseLayer;
-	barrier.subresourceRange.layerCount = layerCount;
-
-	VkPipelineStageFlags sourceStage;
-	VkPipelineStageFlags destinationStage;
-
-	setImageLayoutTransitionOptions(true, oldLayout, barrier.srcAccessMask, sourceStage);
-	setImageLayoutTransitionOptions(false, newLayout, barrier.dstAccessMask, destinationStage);
+	VkImageMemoryBarrier imageBarrier{};
+	imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	imageBarrier.oldLayout = oldLayout;
+	imageBarrier.newLayout = newLayout;
+	imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	imageBarrier.image = image;
+	imageBarrier.subresourceRange.baseMipLevel = baseLevel;
+	imageBarrier.subresourceRange.levelCount = levelCount;
+	imageBarrier.subresourceRange.baseArrayLayer = baseLayer;
+	imageBarrier.subresourceRange.layerCount = layerCount;
 
 	const PixelFormatInfo &info = getPixelFormatInfo(format);
-	if (info.color)
-		barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_COLOR_BIT;
-	if (info.depth)
-		barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
-	if (info.stencil)
-		barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
 
-	vkCmdPipelineBarrier(
-		commandBuffer,
-		sourceStage, destinationStage,
-		0,
-		0, nullptr,
-		0, nullptr,
-		1, &barrier
-	);
+	VkPipelineStageFlags sourceStage = 0;
+	VkPipelineStageFlags destinationStage = 0;
+
+	addImageLayoutTransitionOptions(true, renderTarget, info.depth || info.stencil, oldLayout, imageBarrier.srcAccessMask, sourceStage);
+	addImageLayoutTransitionOptions(false, renderTarget, info.depth || info.stencil, newLayout, imageBarrier.dstAccessMask, destinationStage);
+
+	if (info.color)
+		imageBarrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_COLOR_BIT;
+	if (info.depth)
+		imageBarrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
+	if (info.stencil)
+		imageBarrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+
+	if (oldLayout != newLayout)
+	{
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			sourceStage, destinationStage,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &imageBarrier
+		);
+	}
+	else
+	{
+		// No layout transition needed, but we do still need a memory barrier.
+		VkMemoryBarrier memoryBarrier{};
+		memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		memoryBarrier.srcAccessMask = imageBarrier.srcAccessMask;
+		memoryBarrier.dstAccessMask = imageBarrier.dstAccessMask;
+
+		vkCmdPipelineBarrier(
+			commandBuffer,
+			sourceStage, destinationStage,
+			0,
+			1, &memoryBarrier,
+			0, nullptr,
+			0, nullptr
+		);
+	}
 }
 
 } // vulkan

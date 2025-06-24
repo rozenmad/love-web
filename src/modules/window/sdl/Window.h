@@ -27,7 +27,7 @@
 #include "graphics/Graphics.h"
 
 // SDL
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 namespace love
 {
@@ -98,6 +98,7 @@ public:
 	bool hasMouseFocus() const override;
 
 	bool isVisible() const override;
+	bool isOccluded() const override;
 
 	void setMouseGrab(bool grab) override;
 	bool isMouseGrabbed() const override;
@@ -128,7 +129,11 @@ public:
 	bool showMessageBox(const std::string &title, const std::string &message, MessageBoxType type, bool attachtowindow) override;
 	int showMessageBox(const MessageBoxData &data) override;
 
+	void showFileDialog(const FileDialogData &data, FileDialogCallback callback, void *context) override;
+
 	void requestAttention(bool continuous) override;
+
+	void handleSDLEvent(const SDL_Event &event);
 
 private:
 
@@ -183,6 +188,8 @@ private:
 	ContextAttribs contextAttribs;
 
 	StrongRef<graphics::Graphics> graphics;
+
+	Uint32 dialogEventId;
 
 }; // Window
 

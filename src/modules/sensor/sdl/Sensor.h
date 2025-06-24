@@ -25,7 +25,7 @@
 #include "sensor/Sensor.h"
 
 // SDL
-#include <SDL_sensor.h>
+#include <SDL3/SDL_sensor.h>
 
 // std
 #include <map>

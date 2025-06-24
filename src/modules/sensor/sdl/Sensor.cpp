@@ -22,8 +22,8 @@
 #include "Sensor.h"
 
 // SDL
-#include <SDL.h>
-#include <SDL_sensor.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_sensor.h>
 
 namespace love
 {
@@ -36,7 +36,7 @@ Sensor::Sensor()
 	: love::sensor::Sensor("love.sensor.sdl")
 	, sensors()
 {
-	if (SDL_InitSubSystem(SDL_INIT_SENSOR) < 0)
+	if (!SDL_InitSubSystem(SDL_INIT_SENSOR))
 		throw love::Exception("Could not initialize SDL sensor subsystem (%s)", SDL_GetError());
 }
 
@@ -47,25 +47,17 @@ Sensor::~Sensor()
 
 bool Sensor::hasSensor(SensorType type)
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	int count = 0;
 	SDL_SensorID *sensorIDs = SDL_GetSensors(&count);
 	for (int i = 0; i < count; i++)
 	{
-		if (convert(SDL_GetSensorInstanceType(sensorIDs[i])) == type)
+		if (convert(SDL_GetSensorTypeForID(sensorIDs[i])) == type)
 		{
 			SDL_free(sensorIDs);
 			return true;
 		}
 	}
 	SDL_free(sensorIDs);
-#else
-	for (int i = 0; i < SDL_NumSensors(); i++)
-	{
-		if (convert(SDL_SensorGetDeviceType(i)) == type)
-			return true;
-	}
-#endif
 
 	return false;
 }
@@ -79,21 +71,16 @@ void Sensor::setEnabled(SensorType type, bool enable)
 {
 	if (sensors[type] && !enable)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		SDL_CloseSensor(sensors[type]);
-#else
-		SDL_SensorClose(sensors[type]);
-#endif
 		sensors[type] = nullptr;
 	}
 	else if (sensors[type] == nullptr && enable)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		int count = 0;
 		SDL_SensorID *sensorIDs = SDL_GetSensors(&count);
 		for (int i = 0; i < count; i++)
 		{
-			if (convert(SDL_GetSensorInstanceType(sensorIDs[i])) == type)
+			if (convert(SDL_GetSensorTypeForID(sensorIDs[i])) == type)
 			{
 				SDL_Sensor *sensorHandle = SDL_OpenSensor(sensorIDs[i]);
 
@@ -110,24 +97,6 @@ void Sensor::setEnabled(SensorType type, bool enable)
 			}
 		}
 		SDL_free(sensorIDs);
-#else
-		for (int i = 0; i < SDL_NumSensors(); i++)
-		{
-			if (convert(SDL_SensorGetDeviceType(i)) == type)
-			{
-				SDL_Sensor *sensorHandle = SDL_SensorOpen(i);
-
-				if (sensorHandle == nullptr)
-				{
-					const char *name = nullptr;
-					getConstant(type, name);
-					throw love::Exception("Could not open \"%s\" SDL sensor (%s)", name, SDL_GetError());
-				}
-
-				sensors[type] = sensorHandle;
-			}
-		}
-#endif
 	}
 }
 
@@ -143,11 +112,7 @@ std::vector<float> Sensor::getData(SensorType type)
 
 	std::vector<float> values(3);
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	if (SDL_GetSensorData(sensors[type], values.data(), (int) values.size()) != 0)
-#else
-	if (SDL_SensorGetData(sensors[type], values.data(), (int) values.size()) != 0)
-#endif
+	if (!SDL_GetSensorData(sensors[type], values.data(), (int) values.size()))
 	{
 		const char *name = nullptr;
 		getConstant(type, name);
@@ -181,11 +146,7 @@ const char *Sensor::getSensorName(SensorType type)
 		throw love::Exception("\"%s\" sensor is not enabled", name);
 	}
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	return SDL_GetSensorName(sensors[type]);
-#else
-	return SDL_SensorGetName(sensors[type]);
-#endif
 }
 
 Sensor::SensorType Sensor::convert(SDL_SensorType type)

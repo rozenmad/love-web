@@ -26,6 +26,7 @@
 #	include "graphics/vulkan/Vulkan.h"
 #endif
 #include "Window.h"
+#include "filesystem/Filesystem.h"
 
 #ifdef LOVE_ANDROID
 #include "common/android.h"
@@ -43,13 +44,8 @@
 // C
 #include <cstdio>
 
-// SDL
-#if !SDL_VERSION_ATLEAST(3, 0, 0)
-#include <SDL_syswm.h>
-#endif
-
 #ifdef LOVE_GRAPHICS_VULKAN
-#include <SDL_vulkan.h>
+#include <SDL3/SDL_vulkan.h>
 #endif
 
 #if defined(LOVE_WINDOWS)
@@ -65,10 +61,6 @@
 #define APIENTRY
 #endif
 
-#ifndef SDL_HINT_WINDOWS_DPI_SCALING
-#define SDL_HINT_WINDOWS_DPI_SCALING "SDL_WINDOWS_DPI_SCALING"
-#endif
-
 namespace love
 {
 namespace window
@@ -77,13 +69,7 @@ namespace window
 // See src/modules/window/Window.cpp.
 void setHighDPIAllowedImplementation(bool enable)
 {
-#if defined(LOVE_WINDOWS)
-	// Windows uses a different API than SDL_WINDOW_ALLOW_HIGHDPI.
-	// This must be set before the video subsystem is initialized.
-	SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, enable ? "1" : "0");
-#else
 	LOVE_UNUSED(enable);
-#endif
 }
 
 namespace sdl
@@ -101,7 +87,7 @@ Window::Window()
 	, displayedWindowError(false)
 	, contextAttribs()
 {
-	if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0)
+	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
 		throw love::Exception("Could not initialize SDL video subsystem (%s)", SDL_GetError());
 
 	// Make sure the screensaver doesn't activate by default.
@@ -110,15 +96,17 @@ Window::Window()
 #ifdef LOVE_WINDOWS
 	// Turned off by default, because it (ironically) causes stuttering issues
 	// on some setups. More investigation is needed before enabling it.
-	canUseDwmFlush = SDL_GetHintBoolean("LOVE_GRAPHICS_VSYNC_DWM", SDL_FALSE) != SDL_FALSE;
+	canUseDwmFlush = SDL_GetHintBoolean("LOVE_GRAPHICS_VSYNC_DWM", false);
 #endif
+
+	dialogEventId = SDL_RegisterEvents(1);
 }
 
 Window::~Window()
 {
 	close(false);
 	graphics.set(nullptr);
-	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+	SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
 }
 
 void Window::setGraphics(graphics::Graphics *graphics)
@@ -317,7 +305,7 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 	{
 		if (glcontext)
 		{
-			SDL_GL_DeleteContext(glcontext);
+			SDL_GL_DestroyContext(glcontext);
 			glcontext = nullptr;
 		}
 
@@ -332,19 +320,11 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 		if (window)
 		{
 			SDL_DestroyWindow(window);
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 			SDL_FlushEvents(SDL_EVENT_WINDOW_FIRST, SDL_EVENT_WINDOW_LAST);
-#else
-			SDL_FlushEvent(SDL_WINDOWEVENT);
-#endif
 			window = nullptr;
 		}
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		window = SDL_CreateWindow(title.c_str(), w, h, windowflags);
-#else
-		window = SDL_CreateWindow(title.c_str(), x, y, w, h, windowflags);
-#endif
 
 		if (!window)
 		{
@@ -352,9 +332,7 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 			return false;
 		}
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		SDL_SetWindowPosition(window, x, y);
-#endif
 
 		if (attribs != nullptr && renderer == love::graphics::Renderer::RENDERER_OPENGL)
 		{
@@ -370,7 +348,7 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 			// Make sure the context's version is at least what we requested.
 			if (glcontext && !checkGLVersion(*attribs, glversion))
 			{
-				SDL_GL_DeleteContext(glcontext);
+				SDL_GL_DestroyContext(glcontext);
 				glcontext = nullptr;
 			}
 
@@ -474,7 +452,6 @@ bool Window::createWindowAndContext(int x, int y, int w, int h, Uint32 windowfla
 	return true;
 }
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 struct SDLDisplayIDs
 {
 	SDLDisplayIDs()
@@ -499,7 +476,6 @@ static SDL_DisplayID GetSDLDisplayIDForIndex(int displayindex)
 		return (SDL_DisplayID) 0;
 	return displayids.ids[displayindex];
 }
-#endif
 
 bool Window::setWindow(int width, int height, WindowSettings *settings)
 {
@@ -522,28 +498,17 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 	f.minwidth = std::max(f.minwidth, 1);
 	f.minheight = std::max(f.minheight, 1);
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDLDisplayIDs displays;
 	int displaycount = displays.count;
-#else
-	int displaycount = getDisplayCount();
-#endif
 
 	f.displayindex = std::min(std::max(f.displayindex, 0), displaycount - 1);
 
 	// Use the desktop resolution if a width or height of 0 is specified.
 	if (width == 0 || height == 0)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(displays.ids[f.displayindex]);
 		width = mode->w;
 		height = mode->h;
-#else
-		SDL_DisplayMode mode = {};
-		SDL_GetDesktopDisplayMode(f.displayindex, &mode);
-		width = mode.w;
-		height = mode.h;
-#endif
 	}
 
 	// On Android, disable fullscreen first on window creation so it's
@@ -566,69 +531,42 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 	{
 		// The position needs to be in the global coordinate space.
 		SDL_Rect displaybounds = {};
-		SDL_GetDisplayBounds(f.displayindex, &displaybounds);
+		SDL_GetDisplayBounds(displays.ids[f.displayindex], &displaybounds);
 		x += displaybounds.x;
 		y += displaybounds.y;
 	}
 	else
 	{
 		if (f.centered)
-			x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(f.displayindex);
+			x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displays.ids[f.displayindex]);
 		else
-			x = y = SDL_WINDOWPOS_UNDEFINED_DISPLAY(f.displayindex);
+			x = y = SDL_WINDOWPOS_UNDEFINED_DISPLAY(displays.ids[f.displayindex]);
 	}
 
 	Uint32 sdlflags = 0;
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	const SDL_DisplayMode *fsmode = nullptr;
-#else
-	SDL_DisplayMode fsmode = {0, width, height, 0, nullptr};
-#endif
+	SDL_DisplayMode fsmode = {};
 
 	if (f.fullscreen)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		sdlflags |= SDL_WINDOW_FULLSCREEN;
 
 		if (f.fstype == FULLSCREEN_EXCLUSIVE)
 		{
 			SDL_DisplayID display = displays.ids[f.displayindex];
-			fsmode = SDL_GetClosestFullscreenDisplayMode(display, width, height, 0, isHighDPIAllowed());
-			if (fsmode == nullptr)
+			if (!SDL_GetClosestFullscreenDisplayMode(display, width, height, 0, isHighDPIAllowed(), &fsmode))
 			{
 				// GetClosestDisplayMode will fail if we request a size larger
 				// than the largest available display mode, so we'll try to use
 				// the largest (first) mode in that case.
 				int modecount = 0;
-				const SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display, &modecount);
-				fsmode = modecount > 0 ? modes[0] : nullptr;
+				SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display, &modecount);
+				if (modecount > 0)
+					fsmode = *modes[0];
 				SDL_free(modes);
-				if (fsmode == nullptr)
+				if (fsmode.w == 0 || fsmode.h == 0)
 					return false;
 			}
 		}
-#else
-		if (f.fstype == FULLSCREEN_EXCLUSIVE)
-		{
-			// Fullscreen window creation will bug out if no mode can be used.
-			if (SDL_GetClosestDisplayMode(f.displayindex, &fsmode, &fsmode) == nullptr)
-			{
-				// GetClosestDisplayMode will fail if we request a size larger
-				// than the largest available display mode, so we'll try to use
-				// the largest (first) mode in that case.
-				if (SDL_GetDisplayMode(f.displayindex, 0, &fsmode) < 0)
-					return false;
-			}
-
-			sdlflags |= SDL_WINDOW_FULLSCREEN;
-			width = fsmode.w;
-			height = fsmode.h;
-		}
-		else
-		{
-			sdlflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-		}
-#endif
 	}
 
 	bool needsetmode = false;
@@ -638,23 +576,22 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 
 	if (isOpen())
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-		SDL_SetWindowFullscreenMode(window, fsmode);
-		if (SDL_SetWindowFullscreen(window, (sdlflags & SDL_WINDOW_FULLSCREEN) != 0) == 0 && renderer == graphics::RENDERER_OPENGL)
-#else
-		if (f.fullscreen && f.fstype == FULLSCREEN_EXCLUSIVE)
-			SDL_SetWindowDisplayMode(window, &fsmode);
-		if (SDL_SetWindowFullscreen(window, sdlflags) == 0 && renderer == graphics::RENDERER_OPENGL)
-#endif
+		if (fsmode.w > 0 && fsmode.h > 0)
+			SDL_SetWindowFullscreenMode(window, &fsmode);
+		else
+			SDL_SetWindowFullscreenMode(window, nullptr);
+
+		if (SDL_SetWindowFullscreen(window, (sdlflags & SDL_WINDOW_FULLSCREEN) != 0) && renderer == graphics::RENDERER_OPENGL)
 			SDL_GL_MakeCurrent(window, glcontext);
 
+		// TODO: should we make this conditional, to avoid love.resize events when the size doesn't change?
 		SDL_SetWindowSize(window, width, height);
 
 		if (this->settings.resizable != f.resizable)
-			SDL_SetWindowResizable(window, f.resizable ? SDL_TRUE : SDL_FALSE);
+			SDL_SetWindowResizable(window, f.resizable);
 
 		if (this->settings.borderless != f.borderless)
-			SDL_SetWindowBordered(window, f.borderless ? SDL_FALSE : SDL_TRUE);
+			SDL_SetWindowBordered(window, !f.borderless);
 	}
 	else
 	{
@@ -675,15 +612,9 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 			 sdlflags |= SDL_WINDOW_BORDERLESS;
 
 		// Note: this flag is ignored on Windows.
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		if (isHighDPIAllowed())
 			sdlflags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-#else
-		 if (isHighDPIAllowed())
-			 sdlflags |= SDL_WINDOW_ALLOW_HIGHDPI;
-#endif
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		Uint32 createflags = sdlflags & (~SDL_WINDOW_FULLSCREEN);
 
 		if (!createWindowAndContext(x, y, width, height, createflags, renderer))
@@ -691,16 +622,17 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 
 		if (f.fullscreen)
 		{
-			SDL_SetWindowFullscreenMode(window, fsmode);
-			SDL_SetWindowFullscreen(window, SDL_TRUE);
+			if (fsmode.w > 0 && fsmode.h > 0)
+				SDL_SetWindowFullscreenMode(window, &fsmode);
+			else
+				SDL_SetWindowFullscreenMode(window, nullptr);
+			SDL_SetWindowFullscreen(window, true);
 		}
-#else
-		if (!createWindowAndContext(x, y, width, height, sdlflags, renderer))
-			return false;
-#endif
 
 		needsetmode = true;
 	}
+
+	windowRenderer = renderer;
 
 	// Make sure the window keeps any previously set icon.
 	setIcon(icon.get());
@@ -720,8 +652,6 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 
 	updateSettings(f, false);
 
-	windowRenderer = renderer;
-
 	if (graphics.get())
 	{
 		double scaledw, scaledh;
@@ -737,6 +667,7 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 				context = (void *) SDL_Metal_GetLayer(metalView);
 #endif
 
+			// TODO: try/catch
 			graphics->setMode(context, (int) scaledw, (int) scaledh, pixelWidth, pixelHeight, f.stencil, f.depth, f.msaa);
 		}
 		else
@@ -754,9 +685,7 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
 	love::android::setImmersive(fullscreen);
 #endif
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_SyncWindow(window);
-#endif
 
 	return true;
 }
@@ -766,29 +695,9 @@ bool Window::onSizeChanged(int width, int height)
 	if (!window)
 		return false;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_GetWindowSize(window, &windowWidth, &windowHeight);
-#else
-	windowWidth = width;
-	windowHeight = height;
-#endif
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	if (SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight) < 0)
-#else
-	// TODO: Use SDL_GetWindowSizeInPixels here when supported.
-	if (glcontext != nullptr)
-		SDL_GL_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#ifdef LOVE_GRAPHICS_METAL
-	else if (metalView != nullptr)
-		SDL_Metal_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#endif
-#ifdef LOVE_GRAPHICS_VULKAN
-	else if (windowRenderer == graphics::RENDERER_VULKAN)
-		SDL_Vulkan_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#endif
-	else
-#endif
+	if (!SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight))
 	{
 		pixelWidth = width;
 		pixelHeight = height;
@@ -806,9 +715,7 @@ bool Window::onSizeChanged(int width, int height)
 
 void Window::updateSettings(const WindowSettings &newsettings, bool updateGraphicsViewport)
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_SyncWindow(window);
-#endif
 
 	Uint32 wflags = SDL_GetWindowFlags(window);
 
@@ -818,27 +725,9 @@ void Window::updateSettings(const WindowSettings &newsettings, bool updateGraphi
 	pixelWidth = windowWidth;
 	pixelHeight = windowHeight;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
-#else
-	// TODO: Use SDL_GetWindowSizeInPixels here when supported.
-	if ((wflags & SDL_WINDOW_OPENGL) != 0)
-		SDL_GL_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#ifdef LOVE_GRAPHICS_METAL
-	else if ((wflags & SDL_WINDOW_METAL) != 0)
-		SDL_Metal_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#endif
-#ifdef LOVE_GRAPHICS_VULKAN
-	else if ((wflags & SDL_WINDOW_VULKAN) != 0)
-		SDL_Vulkan_GetDrawableSize(window, &pixelWidth, &pixelHeight);
-#endif
-#endif
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	if (((wflags & SDL_WINDOW_FULLSCREEN) == SDL_WINDOW_FULLSCREEN) && SDL_GetWindowFullscreenMode(window) == nullptr)
-#else
-	if ((wflags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP)
-#endif
 	{
 		settings.fullscreen = true;
 		settings.fstype = FULLSCREEN_DESKTOP;
@@ -868,11 +757,7 @@ void Window::updateSettings(const WindowSettings &newsettings, bool updateGraphi
 
 	getPosition(settings.x, settings.y, settings.displayindex);
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	setHighDPIAllowed((wflags & SDL_WINDOW_HIGH_PIXEL_DENSITY) != 0);
-#else
-	setHighDPIAllowed((wflags & SDL_WINDOW_ALLOW_HIGHDPI) != 0);
-#endif
 
 	settings.usedpiscale = newsettings.usedpiscale;
 
@@ -887,19 +772,11 @@ void Window::updateSettings(const WindowSettings &newsettings, bool updateGraphi
 	settings.stencil = newsettings.stencil;
 	settings.depth = newsettings.depth;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDLDisplayIDs displayids;
 	const SDL_DisplayMode *dmode = SDL_GetCurrentDisplayMode(displayids.ids[settings.displayindex]);
 
 	// May be 0 if the refresh rate can't be determined.
 	settings.refreshrate = dmode->refresh_rate;
-#else
-	SDL_DisplayMode dmode = {};
-	SDL_GetCurrentDisplayMode(settings.displayindex, &dmode);
-
-	// May be 0 if the refresh rate can't be determined.
-	settings.refreshrate = (double) dmode.refresh_rate;
-#endif
 
 	// Update the viewport size now instead of waiting for event polling.
 	if (updateGraphicsViewport && graphics.get())
@@ -938,7 +815,7 @@ void Window::close(bool allowExceptions)
 
 	if (glcontext)
 	{
-		SDL_GL_DeleteContext(glcontext);
+		SDL_GL_DestroyContext(glcontext);
 		glcontext = nullptr;
 	}
 
@@ -957,11 +834,7 @@ void Window::close(bool allowExceptions)
 
 		// The old window may have generated pending events which are no longer
 		// relevant. Destroy them all!
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		SDL_FlushEvents(SDL_EVENT_WINDOW_FIRST, SDL_EVENT_WINDOW_LAST);
-#else
-		SDL_FlushEvent(SDL_WINDOWEVENT);
-#endif
 	}
 
 	open = false;
@@ -979,8 +852,7 @@ bool Window::setFullscreen(bool fullscreen, FullscreenType fstype)
 	newsettings.fullscreen = fullscreen;
 	newsettings.fstype = fstype;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	SDL_bool sdlflags = fullscreen;
+	bool sdlflags = fullscreen;
 	if (fullscreen)
 	{
 		if (fstype == FULLSCREEN_DESKTOP)
@@ -988,37 +860,17 @@ bool Window::setFullscreen(bool fullscreen, FullscreenType fstype)
 		else
 		{
 			SDL_DisplayID displayid = SDL_GetDisplayForWindow(window);
-			const SDL_DisplayMode *mode = SDL_GetClosestFullscreenDisplayMode(displayid, windowWidth, windowHeight, 0, isHighDPIAllowed());
-			if (mode != nullptr)
-				SDL_SetWindowFullscreenMode(window, mode);
-		}
-	}
-#else
-	Uint32 sdlflags = 0;
-
-	if (fullscreen)
-	{
-		if (fstype == FULLSCREEN_DESKTOP)
-			sdlflags = SDL_WINDOW_FULLSCREEN_DESKTOP;
-		else
-		{
-			sdlflags = SDL_WINDOW_FULLSCREEN;
-
 			SDL_DisplayMode mode = {};
-			mode.w = windowWidth;
-			mode.h = windowHeight;
-
-			SDL_GetClosestDisplayMode(SDL_GetWindowDisplayIndex(window), &mode, &mode);
-			SDL_SetWindowDisplayMode(window, &mode);
+			if (SDL_GetClosestFullscreenDisplayMode(displayid, windowWidth, windowHeight, 0, isHighDPIAllowed(), &mode))
+				SDL_SetWindowFullscreenMode(window, &mode);
 		}
 	}
-#endif
 
 #ifdef LOVE_ANDROID
 	love::android::setImmersive(fullscreen);
 #endif
 
-	if (SDL_SetWindowFullscreen(window, sdlflags) == 0)
+	if (SDL_SetWindowFullscreen(window, sdlflags))
 	{
 		if (glcontext)
 			SDL_GL_MakeCurrent(window, glcontext);
@@ -1037,21 +889,13 @@ bool Window::setFullscreen(bool fullscreen)
 
 int Window::getDisplayCount() const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDLDisplayIDs displayids;
 	return displayids.count;
-#else
-	return SDL_GetNumVideoDisplays();
-#endif
 }
 
 const char *Window::getDisplayName(int displayindex) const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	const char *name = SDL_GetDisplayName(GetSDLDisplayIDForIndex(displayindex));
-#else
-	const char *name = SDL_GetDisplayName(displayindex);
-#endif
 
 	if (name == nullptr)
 		throw love::Exception("Invalid display index: %d", displayindex + 1);
@@ -1061,11 +905,7 @@ const char *Window::getDisplayName(int displayindex) const
 
 Window::DisplayOrientation Window::getDisplayOrientation(int displayindex) const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	switch (SDL_GetCurrentDisplayOrientation(GetSDLDisplayIDForIndex(displayindex)))
-#else
-	switch (SDL_GetDisplayOrientation(displayindex))
-#endif
 	{
 		case SDL_ORIENTATION_UNKNOWN: return ORIENTATION_UNKNOWN;
 		case SDL_ORIENTATION_LANDSCAPE: return ORIENTATION_LANDSCAPE;
@@ -1081,22 +921,13 @@ std::vector<Window::WindowSize> Window::getFullscreenSizes(int displayindex) con
 {
 	std::vector<WindowSize> sizes;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	int count = 0;
-	const SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(GetSDLDisplayIDForIndex(displayindex), &count);
+	SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(GetSDLDisplayIDForIndex(displayindex), &count);
 
 	for (int i = 0; i < count; i++)
 	{
 		// TODO: other mode properties?
 		WindowSize w = {modes[i]->w, modes[i]->h};
-#else
-	for (int i = 0; i < SDL_GetNumDisplayModes(displayindex); i++)
-	{
-		SDL_DisplayMode mode = {};
-		SDL_GetDisplayMode(displayindex, i, &mode);
-
-		WindowSize w = {mode.w, mode.h};
-#endif
 
 		// SDL2's display mode list has multiple entries for modes of the same
 		// size with different bits per pixel, so we need to filter those out.
@@ -1104,16 +935,13 @@ std::vector<Window::WindowSize> Window::getFullscreenSizes(int displayindex) con
 			sizes.push_back(w);
 	}
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_free(modes);
-#endif
 
 	return sizes;
 }
 
 void Window::getDesktopDimensions(int displayindex, int &width, int &height) const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(GetSDLDisplayIDForIndex(displayindex));
 	if (mode != nullptr)
 	{
@@ -1121,15 +949,6 @@ void Window::getDesktopDimensions(int displayindex, int &width, int &height) con
 		width = mode->w;
 		height = mode->h;
 	}
-#else
-	if (displayindex >= 0 && displayindex < getDisplayCount())
-	{
-		SDL_DisplayMode mode = {};
-		SDL_GetDesktopDisplayMode(displayindex, &mode);
-		width = mode.w;
-		height = mode.h;
-	}
-#endif
 	else
 	{
 		width = 0;
@@ -1142,20 +961,19 @@ void Window::setPosition(int x, int y, int displayindex)
 	if (!window)
 		return;
 
-	displayindex = std::min(std::max(displayindex, 0), getDisplayCount() - 1);
+	SDLDisplayIDs displayids;
+
+	displayindex = std::min(std::max(displayindex, 0), displayids.count - 1);
 
 	SDL_Rect displaybounds = {};
-	SDL_GetDisplayBounds(displayindex, &displaybounds);
+	SDL_GetDisplayBounds(displayids.ids[displayindex], &displaybounds);
 
 	// The position needs to be in the global coordinate space.
 	x += displaybounds.x;
 	y += displaybounds.y;
 
 	SDL_SetWindowPosition(window, x, y);
-
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_SyncWindow(window);
-#endif
 
 	settings.useposition = true;
 }
@@ -1169,7 +987,6 @@ void Window::getPosition(int &x, int &y, int &displayindex)
 		return;
 	}
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_DisplayID displayid = SDL_GetDisplayForWindow(window);
 	SDLDisplayIDs displayids;
 	displayindex = 0;
@@ -1181,9 +998,6 @@ void Window::getPosition(int &x, int &y, int &displayindex)
 			break;
 		}
 	}
-#else
-	displayindex = std::max(SDL_GetWindowDisplayIndex(window), 0);
-#endif
 
 	SDL_GetWindowPosition(window, &x, &y);
 
@@ -1193,11 +1007,7 @@ void Window::getPosition(int &x, int &y, int &displayindex)
 	if (x != 0 || y != 0)
 	{
 		SDL_Rect displaybounds = {};
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		SDL_GetDisplayBounds(displayid, &displaybounds);
-#else
-		SDL_GetDisplayBounds(displayindex, &displaybounds);
-#endif
 
 		x -= displaybounds.x;
 		y -= displaybounds.y;
@@ -1262,41 +1072,18 @@ bool Window::setIcon(love::image::ImageData *imgd)
 	if (!window)
 		return false;
 
-#if !SDL_VERSION_ATLEAST(3, 0, 0)
-	Uint32 rmask, gmask, bmask, amask;
-#ifdef LOVE_BIG_ENDIAN
-	rmask = 0xFF000000;
-	gmask = 0x00FF0000;
-	bmask = 0x0000FF00;
-	amask = 0x000000FF;
-#else
-	rmask = 0x000000FF;
-	gmask = 0x0000FF00;
-	bmask = 0x00FF0000;
-	amask = 0xFF000000;
-#endif
-#endif
-
 	int w = imgd->getWidth();
 	int h = imgd->getHeight();
 	int bytesperpixel = (int) getPixelFormatBlockSize(imgd->getFormat());
 	int pitch = w * bytesperpixel;
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	SDL_Surface *sdlicon = SDL_CreateSurfaceFrom(imgd->getData(), w, h, pitch, SDL_PIXELFORMAT_RGBA8888);
-#else
-	SDL_Surface *sdlicon = SDL_CreateRGBSurfaceFrom(imgd->getData(), w, h, bytesperpixel * 8, pitch, rmask, gmask, bmask, amask);
-#endif
+	SDL_Surface *sdlicon = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_ABGR8888, imgd->getData(), pitch);
 
 	if (!sdlicon)
 		return false;
 
 	SDL_SetWindowIcon(window, sdlicon);
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_DestroySurface(sdlicon);
-#else
-	SDL_FreeSurface(sdlicon);
-#endif
 
 	return true;
 }
@@ -1314,7 +1101,6 @@ void Window::setVSync(int vsync)
 
 		// Check if adaptive vsync was requested but not supported, and fall
 		// back to regular vsync if so.
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		if (vsync == -1)
 		{
 			int actualvsync = 0;
@@ -1322,10 +1108,6 @@ void Window::setVSync(int vsync)
 			if (actualvsync != -1)
 				SDL_GL_SetSwapInterval(1);
 		}
-#else
-		if (vsync == -1 && SDL_GL_GetSwapInterval() != -1)
-			SDL_GL_SetSwapInterval(1);
-#endif
 	}
 
 #ifdef LOVE_GRAPHICS_VULKAN
@@ -1349,13 +1131,9 @@ int Window::getVSync() const
 {
 	if (glcontext != nullptr)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		int interval = 0;
 		SDL_GL_GetSwapInterval(&interval);
 		return interval;
-#else
-		return SDL_GL_GetSwapInterval();
-#endif
 	}
 
 #if defined(LOVE_GRAPHICS_METAL)
@@ -1391,17 +1169,16 @@ void Window::setDisplaySleepEnabled(bool enable)
 
 bool Window::isDisplaySleepEnabled() const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	return SDL_ScreenSaverEnabled() != SDL_FALSE;
-#else
-	return SDL_IsScreenSaverEnabled() != SDL_FALSE;
-#endif
+	return SDL_ScreenSaverEnabled();
 }
 
 void Window::minimize()
 {
 	if (window != nullptr)
+	{
 		SDL_MinimizeWindow(window);
+		updateSettings(settings, true);
+	}
 }
 
 void Window::maximize()
@@ -1470,27 +1247,16 @@ void Window::swapBuffers()
 					dwmRefreshRate = (double)info.rateRefresh.uiNumerator / (double)info.rateRefresh.uiDenominator;
 
 				SDL_DisplayMode dmode = {};
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 				SDL_DisplayID display = SDL_GetDisplayForWindow(window);
 				const SDL_DisplayMode* modePtr = SDL_GetCurrentDisplayMode(display);
 				if (modePtr)
 					dmode = *modePtr;
-#else
-				int displayindex = SDL_GetWindowDisplayIndex(window);
-
-				if (displayindex >= 0)
-					SDL_GetCurrentDisplayMode(displayindex, &dmode);
-#endif
 
 				if (dmode.refresh_rate > 0 && dwmRefreshRate > 0 && (fabs(dmode.refresh_rate - dwmRefreshRate) < 2))
 				{
 					SDL_GL_SetSwapInterval(0);
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 					int interval = 0;
 					if (SDL_GL_GetSwapInterval(&interval) == 0 && interval == 0)
-#else
-					if (SDL_GL_GetSwapInterval() == 0)
-#endif
 						useDwmFlush = true;
 					else
 						SDL_GL_SetSwapInterval(swapInterval);
@@ -1523,32 +1289,25 @@ bool Window::hasMouseFocus() const
 
 bool Window::isVisible() const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_HIDDEN) == 0;
-#else
-	return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_SHOWN) != 0;
-#endif
+	return window && (SDL_GetWindowFlags(window) & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
+}
+
+bool Window::isOccluded() const
+{
+	return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED) != 0;
 }
 
 void Window::setMouseGrab(bool grab)
 {
 	mouseGrabbed = grab;
 	if (window)
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-		SDL_SetWindowMouseGrab(window, (SDL_bool) grab);
-#else
-		SDL_SetWindowGrab(window, (SDL_bool) grab);
-#endif
+		SDL_SetWindowMouseGrab(window, grab);
 }
 
 bool Window::isMouseGrabbed() const
 {
 	if (window)
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		return SDL_GetWindowMouseGrab(window);
-#else
-		return SDL_GetWindowGrab(window) != SDL_FALSE;
-#endif
 	else
 		return mouseGrabbed;
 }
@@ -1642,7 +1401,7 @@ double Window::getNativeDPIScale() const
 #ifdef LOVE_ANDROID
 	return love::android::getScreenScale();
 #else
-	return (double) pixelHeight / (double) windowHeight;
+	return window != nullptr ? SDL_GetWindowDisplayScale(window) : 1.0;
 #endif
 }
 
@@ -1694,7 +1453,7 @@ bool Window::showMessageBox(const std::string &title, const std::string &message
 	SDL_MessageBoxFlags flags = convertMessageBoxType(type);
 	SDL_Window *sdlwindow = attachtowindow ? window : nullptr;
 
-	return SDL_ShowSimpleMessageBox(flags, title.c_str(), message.c_str(), sdlwindow) >= 0;
+	return SDL_ShowSimpleMessageBox(flags, title.c_str(), message.c_str(), sdlwindow);
 }
 
 int Window::showMessageBox(const MessageBoxData &data)
@@ -1714,11 +1473,7 @@ int Window::showMessageBox(const MessageBoxData &data)
 	{
 		SDL_MessageBoxButtonData sdlbutton = {};
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 		sdlbutton.buttonID = i;
-#else
-		sdlbutton.buttonid = i;
-#endif
 		sdlbutton.text = data.buttons[i].c_str();
 
 		if (i == data.enterButtonIndex)
@@ -1738,6 +1493,134 @@ int Window::showMessageBox(const MessageBoxData &data)
 	return pressedbutton;
 }
 
+// As of a SDL3 prerelease, a lot of SDL file dialog parameters need to persist
+// until the callback completes, so we store them here.
+// This is also used to retrieve some useful info to pass to love's own callback,
+// and to send that along to SDL events (see below).
+class FileDialogState : public love::Object
+{
+public:
+
+	void *context;
+	Window::FileDialogCallback callback;
+	Uint32 dialogEventId;
+	Window::FileDialogData data;
+	std::vector<SDL_DialogFileFilter> sdlFilters;
+	SDL_PropertiesID props;
+
+	Optional<std::string> err;
+	std::vector<std::string> files;
+	int filterIndex;
+};
+
+static void SDLCALL fileDialogCallbackSDL(void *userdata, const char *const *filelist, int filter)
+{
+	auto state = (FileDialogState *) userdata;
+	if (state == nullptr)
+		return;
+
+	auto fs = Module::getInstance<filesystem::Filesystem>(Module::M_FILESYSTEM);
+
+	if (filelist != nullptr)
+	{
+		// SDL's file list only lasts until the end of the callback, so we copy it.
+		for (int i = 0; filelist[i] != nullptr; i++)
+			state->files.push_back(filelist[i]);
+	}
+	else
+	{
+		state->err.set(SDL_GetError());
+	}
+
+	state->filterIndex = filter;
+
+	SDL_DestroyProperties(state->props);
+
+	// The SDL dialog callback isn't guaranteed to be called on the main thread,
+	// whereas SDL event polling will happen there. This is needed because Lua states
+	// aren't thread safe.
+	SDL_Event event = {};
+	event.type = state->dialogEventId;
+	event.user.data1 = state;
+
+	SDL_PushEvent(&event);
+}
+
+void Window::handleSDLEvent(const SDL_Event &event)
+{
+	if (event.type == dialogEventId)
+	{
+		// Releases itself when it goes out of scope.
+		StrongRef<FileDialogState> state((FileDialogState *) event.user.data1, Acquire::NORETAIN);
+
+		const char *filtername = state->filterIndex >= 0
+			? state->data.filters[state->filterIndex].name.c_str()
+			: nullptr;
+
+		state->callback(state->context, state->files, filtername, state->err.hasValue ? state->err.value.c_str() : nullptr);
+	}
+}
+
+void Window::showFileDialog(const FileDialogData &data, FileDialogCallback callback, void *context)
+{
+	SDL_FileDialogType sdltype = SDL_FILEDIALOG_OPENFILE;
+	switch (data.type)
+	{
+	case FILEDIALOG_OPENFILE:
+	default:
+		sdltype = SDL_FILEDIALOG_OPENFILE;
+		break;
+	case FILEDIALOG_OPENFOLDER:
+		sdltype = SDL_FILEDIALOG_OPENFOLDER;
+		break;
+	case FILEDIALOG_SAVEFILE:
+		sdltype = SDL_FILEDIALOG_SAVEFILE;
+		break;
+	}
+
+	auto state = new FileDialogState();
+	state->callback = callback;
+	state->context = context;
+	state->dialogEventId = dialogEventId;
+	state->data = data;
+
+	for (const auto &filter : state->data.filters)
+	{
+		SDL_DialogFileFilter f = {};
+		f.name = filter.name.c_str();
+		f.pattern = filter.pattern.c_str();
+		state->sdlFilters.push_back(f);
+	}
+
+	// We destroy this in the dialog callback, since it needs to persist until then (until that's fixed in SDL code).
+	state->props = SDL_CreateProperties();
+
+	if (!data.title.empty())
+		SDL_SetStringProperty(state->props, SDL_PROP_FILE_DIALOG_TITLE_STRING, state->data.title.c_str());
+
+	if (!data.acceptLabel.empty())
+		SDL_SetStringProperty(state->props, SDL_PROP_FILE_DIALOG_ACCEPT_STRING, state->data.acceptLabel.c_str());
+
+	if (!data.cancelLabel.empty())
+		SDL_SetStringProperty(state->props, SDL_PROP_FILE_DIALOG_CANCEL_STRING, state->data.cancelLabel.c_str());
+
+	if (!data.defaultName.empty())
+		SDL_SetStringProperty(state->props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, state->data.defaultName.c_str());
+
+	if (data.attachToWindow)
+		SDL_SetPointerProperty(state->props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, window);
+
+	if (!state->sdlFilters.empty())
+	{
+		SDL_SetPointerProperty(state->props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, state->sdlFilters.data());
+		SDL_SetNumberProperty(state->props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, state->sdlFilters.size());
+	}
+
+	SDL_SetBooleanProperty(state->props, SDL_PROP_FILE_DIALOG_MANY_BOOLEAN, data.multiSelect);
+
+	SDL_ShowFileDialogWithProperties(sdltype, fileDialogCallbackSDL, state, state->props);
+}
+
 void Window::requestAttention(bool continuous)
 {
 #if defined(LOVE_WINDOWS) && !defined(LOVE_WINDOWS_UWP)
@@ -1747,17 +1630,7 @@ void Window::requestAttention(bool continuous)
 
 	FLASHWINFO flashinfo = { sizeof(FLASHWINFO) };
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	flashinfo.hwnd = (HWND)SDL_GetProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-#else
-	SDL_SysWMinfo wminfo = {};
-	SDL_VERSION(&wminfo.version);
-	if (!SDL_GetWindowWMInfo(window, &wminfo))
-		return;
-
-	flashinfo.hwnd = wminfo.info.win.window;
-#endif
-
+	flashinfo.hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
 	flashinfo.uCount = 1;
 	flashinfo.dwFlags = FLASHW_ALL;
 

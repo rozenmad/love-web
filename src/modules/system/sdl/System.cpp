@@ -23,13 +23,10 @@
 #include "window/Window.h"
 
 // SDL
-#include <SDL_clipboard.h>
-#include <SDL_cpuinfo.h>
-#include <SDL_version.h>
-
-#if SDL_VERSION_ATLEAST(2, 0, 14)
-#include <SDL_locale.h>
-#endif
+#include <SDL3/SDL_clipboard.h>
+#include <SDL3/SDL_cpuinfo.h>
+#include <SDL3/SDL_locale.h>
+#include <SDL3/SDL_misc.h>
 
 namespace love
 {
@@ -45,7 +42,7 @@ System::System()
 
 int System::getProcessorCount() const
 {
-	return SDL_GetCPUCount();
+	return SDL_GetNumLogicalCPUCores();
 }
 
 bool System::isWindowOpen() const
@@ -91,26 +88,26 @@ love::system::System::PowerState System::getPowerInfo(int &seconds, int &percent
 	return state;
 }
 
+bool System::openURL(const std::string &url) const
+{
+	return SDL_OpenURL(url.c_str());
+}
+
 std::vector<std::string> System::getPreferredLocales() const
 {
 	std::vector<std::string> result;
 
-#if SDL_VERSION_ATLEAST(2, 0, 14)
-	SDL_Locale *locales = SDL_GetPreferredLocales();
-
-	if (locales)
+	int count = 0;
+	SDL_Locale **locales = SDL_GetPreferredLocales(&count);
+	for (int i = 0; i < count; i++)
 	{
-		for (SDL_Locale* locale = locales; locale->language != nullptr; locale++)
-		{
-			if (locale->country)
-				result.push_back(std::string(locale->language) + "_" + std::string(locale->country));
-			else
-				result.push_back(locale->language);
-		}
-
-		SDL_free(locales);
+		SDL_Locale *locale = locales[i];
+		if (locale->country)
+			result.push_back(std::string(locale->language) + "_" + std::string(locale->country));
+		else
+			result.push_back(locale->language);
 	}
-#endif
+	SDL_free(locales);
 
 	return result;
 }

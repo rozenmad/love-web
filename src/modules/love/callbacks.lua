@@ -52,14 +52,14 @@ function love.createhandlers()
 		wheelmoved = function (x,y,px,py,dir)
 			if love.wheelmoved then return love.wheelmoved(x,y,px,py,dir) end
 		end,
-		touchpressed = function (id,x,y,dx,dy,p)
-			if love.touchpressed then return love.touchpressed(id,x,y,dx,dy,p) end
+		touchpressed = function (id,x,y,dx,dy,p,t,m)
+			if love.touchpressed then return love.touchpressed(id,x,y,dx,dy,p,t,m) end
 		end,
-		touchreleased = function (id,x,y,dx,dy,p)
-			if love.touchreleased then return love.touchreleased(id,x,y,dx,dy,p) end
+		touchreleased = function (id,x,y,dx,dy,p,t,m)
+			if love.touchreleased then return love.touchreleased(id,x,y,dx,dy,p,t,m) end
 		end,
-		touchmoved = function (id,x,y,dx,dy,p)
-			if love.touchmoved then return love.touchmoved(id,x,y,dx,dy,p) end
+		touchmoved = function (id,x,y,dx,dy,p,t,m)
+			if love.touchmoved then return love.touchmoved(id,x,y,dx,dy,p,t,m) end
 		end,
 		joystickpressed = function (j,b)
 			if love.joystickpressed then return love.joystickpressed(j,b) end
@@ -100,6 +100,12 @@ function love.createhandlers()
 		visible = function (v)
 			if love.visible then return love.visible(v) end
 		end,
+		exposed = function ()
+			if love.exposed then return love.exposed() end
+		end,
+		occluded = function ()
+			if love.occluded then return love.occluded() end
+		end,
 		quit = function ()
 			return
 		end,
@@ -108,12 +114,22 @@ function love.createhandlers()
 		end,
 		resize = function (w, h)
 			if love.resize then return love.resize(w, h) end
+			collectgarbage()
 		end,
-		filedropped = function (f)
-			if love.filedropped then return love.filedropped(f) end
+		filedropped = function (f, x, y)
+			if love.filedropped then return love.filedropped(f, x, y) end
 		end,
-		directorydropped = function (dir)
-			if love.directorydropped then return love.directorydropped(dir) end
+		directorydropped = function (dir, x, y)
+			if love.directorydropped then return love.directorydropped(dir, x, y) end
+		end,
+		dropbegan = function ()
+			if love.dropbegan then return love.dropbegan() end
+		end,
+		dropmoved = function (x, y)
+			if love.dropmoved then return love.dropmoved(x, y) end
+		end,
+		dropcompleted = function (x, y)
+			if love.dropcompleted then return love.dropcompleted(x, y) end
 		end,
 		lowmemory = function ()
 			if love.lowmemory then love.lowmemory() end
@@ -157,13 +173,13 @@ function love.run()
 		-- Process events.
 		if love.event then
 			love.event.pump()
-			for name, a,b,c,d,e,f in love.event.poll() do
+			for name, a,b,c,d,e,f,g,h in love.event.poll() do
 				if name == "quit" then
-					if not love.quit or not love.quit() then
+					if c or not love.quit or not love.quit() then
 						return a or 0, b
 					end
 				end
-				love.handlers[name](a,b,c,d,e,f)
+				love.handlers[name](a,b,c,d,e,f,g,h)
 			end
 		end
 
@@ -186,6 +202,7 @@ function love.run()
 	end
 end
 
+local pcall, table = pcall, table
 local debug, print, tostring, error = debug, print, tostring, error
 
 function love.threaderror(t, err)
@@ -198,7 +215,7 @@ local function error_printer(msg, layer)
 	print((debug.traceback("Error: " .. tostring(msg), 1+(layer or 1)):gsub("\n[^\n]+$", "")))
 end
 
-function love.errhand(msg)
+function love.errorhandler(msg)
 	msg = tostring(msg)
 
 	error_printer(msg, 2)
@@ -289,7 +306,7 @@ function love.errhand(msg)
 	end
 
 	return function()
-		love.event.pump()
+		love.event.pump(0.1)
 
 		for e, a, b, c in love.event.poll() do
 			if e == "quit" then
@@ -317,11 +334,14 @@ function love.errhand(msg)
 		draw()
 
 		if love.timer then
-			love.timer.sleep(0.1)
+			love.timer.sleep(0.001)
 		end
 	end
 
 end
+
+-- Legacy code support.
+love.errhand = love.errorhandler
 
 -- DO NOT REMOVE THE NEXT LINE. It is used to load this file as a C++ string.
 --)luastring"--"

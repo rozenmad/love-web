@@ -26,7 +26,12 @@
 #include "audio/Source.h"
 
 // SDL
-#include <SDL_events.h>
+#include <SDL3/SDL_events.h>
+
+namespace love::window
+{
+class Window;
+}
 
 namespace love
 {
@@ -47,19 +52,17 @@ public:
 	 * from devices and places it on the event queue. Normally not needed if you poll
 	 * for events.
 	 **/
-	void pump();
+	void pump(float waitTimeout = 0.0f) override;
 
-	/**
-	 * Waits for the next event (indefinitely). Useful for creating games where
-	 * the screen and game state only needs updating when the user interacts with
-	 * the window.
-	 **/
-	Message *wait();
+	// Deprecated.
+	Message *wait() override;
 
 	/**
 	 * Clears the event queue.
 	 */
-	void clear();
+	void clear() override;
+
+	bool allowModalDraws() const;
 
 private:
 
@@ -67,7 +70,9 @@ private:
 
 	Message *convert(const SDL_Event &e);
 	Message *convertJoystickEvent(const SDL_Event &e) const;
-	Message *convertWindowEvent(const SDL_Event &e);
+	Message *convertWindowEvent(const SDL_Event &e, love::window::Window *win);
+
+	bool insideEventPump = false;
 
 }; // Event
 

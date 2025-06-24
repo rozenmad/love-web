@@ -18,16 +18,9 @@
  * 3. This notice may not be removed or altered from any source distribution.
  **/
 
-#include <SDL_version.h>
-
 #include "Keyboard.h"
 #include "window/Window.h"
 #include "common/config.h"
-
-// SDL before 2.0.18 lack KMOD_SCROLL. Use KMOD_RESERVED instead.
-#if !SDL_VERSION_ATLEAST(2, 0, 18)
-#define KMOD_SCROLL KMOD_RESERVED
-#endif // !SDL_VERSION_ATLEAST(2, 0, 18)
 
 namespace love
 {
@@ -35,6 +28,14 @@ namespace keyboard
 {
 namespace sdl
 {
+
+static SDL_Window *getSDLWindow()
+{
+	auto window = Module::getInstance<window::Window>(Module::M_WINDOW);
+	if (window)
+		return (SDL_Window *) window->getHandle();
+	return nullptr;
+}
 
 Keyboard::Keyboard()
 	: love::keyboard::Keyboard("love.keyboard.sdl")
@@ -54,14 +55,14 @@ bool Keyboard::hasKeyRepeat() const
 
 bool Keyboard::isDown(const std::vector<Key> &keylist) const
 {
-	const Uint8 *state = SDL_GetKeyboardState(nullptr);
+	const bool *state = SDL_GetKeyboardState(nullptr);
 
 	for (Key key : keylist)
 	{
 		SDL_Keycode sdlkey = SDLK_UNKNOWN;
 		if (getConstant(key, sdlkey))
 		{
-			SDL_Scancode scancode = SDL_GetScancodeFromKey(sdlkey);
+			SDL_Scancode scancode = SDL_GetScancodeFromKey(sdlkey, nullptr);
 			if (state[scancode])
 				return true;
 		}
@@ -72,7 +73,7 @@ bool Keyboard::isDown(const std::vector<Key> &keylist) const
 
 bool Keyboard::isScancodeDown(const std::vector<Scancode> &scancodelist) const
 {
-	const Uint8 *state = SDL_GetKeyboardState(nullptr);
+	const bool *state = SDL_GetKeyboardState(nullptr);
 
 	for (Scancode scancode : scancodelist)
 	{
@@ -91,7 +92,6 @@ bool Keyboard::isModifierActive(ModifierKey key) const
 
 	switch (key)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	case MODKEY_NUMLOCK:
 		return (modstate & SDL_KMOD_NUM) != 0;
 	case MODKEY_CAPSLOCK:
@@ -100,16 +100,6 @@ bool Keyboard::isModifierActive(ModifierKey key) const
 		return (modstate & SDL_KMOD_SCROLL) != 0;
 	case MODKEY_MODE:
 		return (modstate & SDL_KMOD_MODE) != 0;
-#else
-	case MODKEY_NUMLOCK:
-		return (modstate & KMOD_NUM) != 0;
-	case MODKEY_CAPSLOCK:
-		return (modstate & KMOD_CAPS) != 0;
-	case MODKEY_SCROLLLOCK:
-		return (modstate & KMOD_SCROLL) != 0;
-	case MODKEY_MODE:
-		return (modstate & KMOD_MODE) != 0;
-#endif
 	default:
 		break;
 	}
@@ -122,7 +112,7 @@ Keyboard::Key Keyboard::getKeyFromScancode(Scancode scancode) const
 	SDL_Scancode sdlscancode = SDL_SCANCODE_UNKNOWN;
 	scancodes.find(scancode, sdlscancode);
 
-	SDL_Keycode sdlkey = SDL_GetKeyFromScancode(sdlscancode);
+	SDL_Keycode sdlkey = SDL_GetKeyFromScancode(sdlscancode, SDL_KMOD_NONE, false);
 
 	Key key = KEY_UNKNOWN;
 	getConstant(sdlkey, key);
@@ -136,7 +126,7 @@ Keyboard::Scancode Keyboard::getScancodeFromKey(Key key) const
 	SDL_Keycode sdlkey = SDLK_UNKNOWN;
 	if (getConstant(key, sdlkey))
 	{
-		SDL_Scancode sdlscancode = SDL_GetScancodeFromKey(sdlkey);
+		SDL_Scancode sdlscancode = SDL_GetScancodeFromKey(sdlkey, nullptr);
 		scancodes.find(sdlscancode, scancode);
 	}
 
@@ -145,10 +135,13 @@ Keyboard::Scancode Keyboard::getScancodeFromKey(Key key) const
 
 void Keyboard::setTextInput(bool enable)
 {
+	SDL_Window *window = getSDLWindow();
+	if (window == nullptr)
+		return;
 	if (enable)
-		SDL_StartTextInput();
+		SDL_StartTextInput(window);
 	else
-		SDL_StopTextInput();
+		SDL_StopTextInput(window);
 }
 
 void Keyboard::setTextInput(bool enable, double x, double y, double w, double h)
@@ -163,23 +156,33 @@ void Keyboard::setTextInput(bool enable, double x, double y, double w, double h)
 	}
 
 	SDL_Rect rect = {(int) x, (int) y, (int) w, (int) h};
-	SDL_SetTextInputRect(&rect);
+
+	SDL_Window *sdlwindow = getSDLWindow();
+	if (sdlwindow != nullptr)
+		SDL_SetTextInputArea(sdlwindow, &rect, 0);
 
 	setTextInput(enable);
 }
 
 bool Keyboard::hasTextInput() const
 {
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-	return SDL_TextInputActive();
-#else
-	return SDL_IsTextInputActive() != SDL_FALSE;
-#endif
+	SDL_Window *window = getSDLWindow();
+	if (window == nullptr)
+		return false;
+	return SDL_TextInputActive(window);
 }
 
 bool Keyboard::hasScreenKeyboard() const
 {
-	return SDL_HasScreenKeyboardSupport() != SDL_FALSE;
+	return SDL_HasScreenKeyboardSupport();
+}
+
+bool Keyboard::isScreenKeyboardVisible() const
+{
+	SDL_Window *window = getSDLWindow();
+	if (window == nullptr)
+		return false;
+	return SDL_ScreenKeyboardShown(window);
 }
 
 bool Keyboard::getConstant(Key in, SDL_Keycode &out)
@@ -363,16 +366,12 @@ std::map<Keyboard::Key, SDL_Keycode> Keyboard::keyToSDLKey =
 
 	{ KEY_MODE, SDLK_MODE },
 
-	{ KEY_AUDIONEXT, SDLK_AUDIONEXT },
-	{ KEY_AUDIOPREV, SDLK_AUDIOPREV },
-	{ KEY_AUDIOSTOP, SDLK_AUDIOSTOP },
-	{ KEY_AUDIOPLAY, SDLK_AUDIOPLAY },
-	{ KEY_AUDIOMUTE, SDLK_AUDIOMUTE },
-	{ KEY_MEDIASELECT, SDLK_MEDIASELECT },
-	{ KEY_WWW, SDLK_WWW },
-	{ KEY_MAIL, SDLK_MAIL },
-	{ KEY_CALCULATOR, SDLK_CALCULATOR },
-	{ KEY_COMPUTER, SDLK_COMPUTER },
+	{ KEY_AUDIONEXT, SDLK_MEDIA_NEXT_TRACK },
+	{ KEY_AUDIOPREV, SDLK_MEDIA_PREVIOUS_TRACK },
+	{ KEY_AUDIOSTOP, SDLK_MEDIA_STOP },
+	{ KEY_AUDIOPLAY, SDLK_MEDIA_PLAY },
+	{ KEY_AUDIOMUTE, SDLK_MUTE },
+	{ KEY_MEDIASELECT, SDLK_MEDIA_SELECT },
 	{ KEY_APP_SEARCH, SDLK_AC_SEARCH },
 	{ KEY_APP_HOME, SDLK_AC_HOME },
 	{ KEY_APP_BACK, SDLK_AC_BACK },
@@ -381,19 +380,13 @@ std::map<Keyboard::Key, SDL_Keycode> Keyboard::keyToSDLKey =
 	{ KEY_APP_REFRESH, SDLK_AC_REFRESH },
 	{ KEY_APP_BOOKMARKS, SDLK_AC_BOOKMARKS },
 
-	{ KEY_BRIGHTNESSDOWN, SDLK_BRIGHTNESSDOWN },
-	{ KEY_BRIGHTNESSUP, SDLK_BRIGHTNESSUP },
-	{ KEY_DISPLAYSWITCH, SDLK_DISPLAYSWITCH },
-	{ KEY_KBDILLUMTOGGLE, SDLK_KBDILLUMTOGGLE },
-	{ KEY_KBDILLUMDOWN, SDLK_KBDILLUMDOWN },
-	{ KEY_KBDILLUMUP, SDLK_KBDILLUMUP },
-	{ KEY_EJECT, SDLK_EJECT },
+	{ KEY_EJECT, SDLK_MEDIA_EJECT },
 	{ KEY_SLEEP, SDLK_SLEEP },
 };
 
 std::map<SDL_Keycode, Keyboard::Key> Keyboard::sdlKeyToKey;
 
-EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_NUM_SCANCODES>::Entry Keyboard::scancodeEntries[] =
+EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_SCANCODE_COUNT>::Entry Keyboard::scancodeEntries[] =
 {
 	{SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN},
 
@@ -624,16 +617,12 @@ EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_NUM_SCANCODES>::Entry Keyboard::sc
 
 	{SCANCODE_MODE, SDL_SCANCODE_MODE},
 
-	{SCANCODE_AUDIONEXT, SDL_SCANCODE_AUDIONEXT},
-	{SCANCODE_AUDIOPREV, SDL_SCANCODE_AUDIOPREV},
-	{SCANCODE_AUDIOSTOP, SDL_SCANCODE_AUDIOSTOP},
-	{SCANCODE_AUDIOPLAY, SDL_SCANCODE_AUDIOPLAY},
-	{SCANCODE_AUDIOMUTE, SDL_SCANCODE_AUDIOMUTE},
-	{SCANCODE_MEDIASELECT, SDL_SCANCODE_MEDIASELECT},
-	{SCANCODE_WWW, SDL_SCANCODE_WWW},
-	{SCANCODE_MAIL, SDL_SCANCODE_MAIL},
-	{SCANCODE_CALCULATOR, SDL_SCANCODE_CALCULATOR},
-	{SCANCODE_COMPUTER, SDL_SCANCODE_COMPUTER},
+	{SCANCODE_AUDIONEXT, SDL_SCANCODE_MEDIA_NEXT_TRACK},
+	{SCANCODE_AUDIOPREV, SDL_SCANCODE_MEDIA_PREVIOUS_TRACK},
+	{SCANCODE_AUDIOSTOP, SDL_SCANCODE_MEDIA_STOP},
+	{SCANCODE_AUDIOPLAY, SDL_SCANCODE_MEDIA_PLAY},
+	{SCANCODE_AUDIOMUTE, SDL_SCANCODE_MUTE},
+	{SCANCODE_MEDIASELECT, SDL_SCANCODE_MEDIA_SELECT},
 	{SCANCODE_AC_SEARCH, SDL_SCANCODE_AC_SEARCH},
 	{SCANCODE_AC_HOME, SDL_SCANCODE_AC_HOME},
 	{SCANCODE_AC_BACK, SDL_SCANCODE_AC_BACK},
@@ -642,20 +631,11 @@ EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_NUM_SCANCODES>::Entry Keyboard::sc
 	{SCANCODE_AC_REFRESH, SDL_SCANCODE_AC_REFRESH},
 	{SCANCODE_AC_BOOKMARKS, SDL_SCANCODE_AC_BOOKMARKS},
 
-	{SCANCODE_BRIGHTNESSDOWN, SDL_SCANCODE_BRIGHTNESSDOWN},
-	{SCANCODE_BRIGHTNESSUP, SDL_SCANCODE_BRIGHTNESSUP},
-	{SCANCODE_DISPLAYSWITCH, SDL_SCANCODE_DISPLAYSWITCH},
-	{SCANCODE_KBDILLUMTOGGLE, SDL_SCANCODE_KBDILLUMTOGGLE},
-	{SCANCODE_KBDILLUMDOWN, SDL_SCANCODE_KBDILLUMDOWN},
-	{SCANCODE_KBDILLUMUP, SDL_SCANCODE_KBDILLUMUP},
-	{SCANCODE_EJECT, SDL_SCANCODE_EJECT},
+	{SCANCODE_EJECT, SDL_SCANCODE_MEDIA_EJECT},
 	{SCANCODE_SLEEP, SDL_SCANCODE_SLEEP},
-
-	{SCANCODE_APP1, SDL_SCANCODE_APP1},
-	{SCANCODE_APP2, SDL_SCANCODE_APP2},
 };
 
-EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_NUM_SCANCODES> Keyboard::scancodes(Keyboard::scancodeEntries, sizeof(Keyboard::scancodeEntries));
+EnumMap<Keyboard::Scancode, SDL_Scancode, SDL_SCANCODE_COUNT> Keyboard::scancodes(Keyboard::scancodeEntries, sizeof(Keyboard::scancodeEntries));
 
 } // sdl
 } // keyboard

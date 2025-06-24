@@ -62,7 +62,7 @@
 #include <string>
 
 #ifdef LOVE_ANDROID
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include "common/android.h"
 #endif
 
@@ -104,6 +104,27 @@ static bool isAppCommonPath(Filesystem::CommonPath path)
 	default:
 		return false;
 	}
+}
+
+static bool isMounted(const std::string &path)
+{
+	char **mountedpaths = PHYSFS_getSearchPath();
+	if (mountedpaths == nullptr)
+		return false;
+
+	bool mounted = false;
+	for (char **p = mountedpaths; *p != nullptr; p++)
+	{
+		char *mountedpath = *p;
+		if (strcmp(path.c_str(), mountedpath) == 0)
+		{
+			mounted = true;
+			break;
+		}
+	}
+
+	PHYSFS_freeList(mountedpaths);
+	return mounted;
 }
 
 Filesystem::Filesystem()
@@ -211,6 +232,8 @@ bool Filesystem::setIdentity(const char *ident, bool appendToPath)
 	// This is done so the save directory is only created on-demand.
 	if (!mountCommonPathInternal(COMMONPATH_APP_SAVEDIR, nullptr, MOUNT_PERMISSIONS_READWRITE, appendToPath, false))
 		saveDirectoryNeedsMounting = true;
+	else
+		saveDirectoryNeedsMounting = false;
 
 	// Mount any other app common paths with directory creation immediately
 	// instead of on-demand, since to get to this point they would have to be
@@ -279,22 +302,21 @@ bool Filesystem::setSource(const char *source)
 
 	if (!isAAssetMounted)
 	{
-		// Is this love2d://fd/ URIs?
-		int fd = love::android::getFDFromLoveProtocol(new_search_path.c_str());
-		if (fd != -1)
+		// Is this content:// URIs?
+		auto io = (PHYSFS_Io *) love::android::getIOFromContentProtocol(source);
+
+		if (PHYSFS_mountIo(io, "LOVE.FD", nullptr, 0))
 		{
-			PHYSFS_Io *io = (PHYSFS_Io *) love::android::getIOFromFD(fd);
-
-			if (PHYSFS_mountIo(io, "LOVE.FD", nullptr, 0))
-			{
-				gameSource = new_search_path;
-				return true;
-			}
-
-			io->destroy(io);
+			gameSource = source;
+			return true;
 		}
+
+		io->destroy(io);
 	}
 #endif
+
+	if (isMounted(new_search_path))
+		return false;
 
 	// Add the directory.
 	if (!PHYSFS_mount(new_search_path.c_str(), nullptr, 1))
@@ -402,6 +424,28 @@ bool Filesystem::mountFullPath(const char *archive, const char *mountpoint, Moun
 
 	std::string canonarchive = canonicalizeRealPath(archive);
 
+	if (isMounted(canonarchive))
+		return false;
+
+#ifdef LOVE_ANDROID
+	if (strncmp(archive, "content://", 10) == 0)
+	{
+		if (permissions == MOUNT_PERMISSIONS_READWRITE)
+			// Currently there's no way content:// URIs we got are for read-write.
+			// TODO: Re-evaluate this in the future, maybe?
+			return false;
+
+		auto io = (PHYSFS_Io *) love::android::getIOFromContentProtocol(archive);
+		if (!io)
+			return false;
+
+		if (PHYSFS_mountIo(io, canonarchive.c_str(), mountpoint, appendToPath))
+			return true;
+
+		io->destroy(io);
+	}
+#endif
+
 	if (permissions == MOUNT_PERMISSIONS_READWRITE)
 		return PHYSFS_mountRW(canonarchive.c_str(), mountpoint, appendToPath) != 0;
 
@@ -438,6 +482,9 @@ bool Filesystem::mountCommonPath(CommonPath path, const char *mountpoint, MountP
 bool Filesystem::mount(Data *data, const char *archivename, const char *mountpoint, bool appendToPath)
 {
 	if (!PHYSFS_isInit())
+		return false;
+
+	if (isMounted(archivename))
 		return false;
 
 	if (PHYSFS_mountMemory(data->getData(), data->getSize(), nullptr, archivename, mountpoint, appendToPath) != 0)
@@ -630,10 +677,10 @@ std::string Filesystem::getFullCommonPath(CommonPath path)
 #elif defined(LOVE_ANDROID)
 
 	std::string storagepath;
-	if (isAndroidSaveExternal())
-		storagepath = SDL_AndroidGetExternalStoragePath();
-	else
-		storagepath = SDL_AndroidGetInternalStoragePath();
+    if (isAndroidSaveExternal())
+        storagepath = SDL_GetAndroidExternalStoragePath();
+    else
+        storagepath = SDL_GetAndroidInternalStoragePath();
 
 	switch (path)
 	{
@@ -689,6 +736,9 @@ std::string Filesystem::getFullCommonPath(CommonPath path)
 	}
 
 #endif
+
+	if (!fullPaths[path].empty())
+		fullPaths[path] = canonicalizeRealPath(fullPaths[path].c_str());
 
 	return fullPaths[path];
 }

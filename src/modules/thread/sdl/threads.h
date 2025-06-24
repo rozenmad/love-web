@@ -24,8 +24,8 @@
 #include "common/config.h"
 #include "thread/threads.h"
 
-#include <SDL_thread.h>
-#include <SDL_version.h>
+#include <SDL3/SDL_thread.h>
+#include <SDL3/SDL_mutex.h>
 
 namespace love
 {
@@ -48,11 +48,7 @@ public:
 
 private:
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_Mutex *mutex;
-#else
-	SDL_mutex *mutex;
-#endif
 	Mutex(const Mutex&/* mutex*/) {}
 
 	friend class Conditional;
@@ -72,11 +68,7 @@ public:
 
 private:
 
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	SDL_Condition *cond;
-#else
-	SDL_cond *cond;
-#endif
 
 }; // Conditional
 

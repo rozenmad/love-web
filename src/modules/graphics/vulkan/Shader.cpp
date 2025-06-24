@@ -38,6 +38,129 @@ namespace vulkan
 
 static const uint32_t DESCRIPTOR_POOL_SIZE = 1000;
 
+SharedDescriptorPools::SharedDescriptorPools(VkDevice device, int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers)
+	: device(device)
+	, dynamicUniformBuffers(dynamicUniformBuffers)
+	, sampledTextures(sampledTextures)
+	, storageTextures(storageTextures)
+	, texelBuffers(texelBuffers)
+	, storageBuffers(storageBuffers)
+{
+	VkDescriptorPoolSize size{};
+
+	if (dynamicUniformBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+		size.descriptorCount = dynamicUniformBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (sampledTextures > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		size.descriptorCount = sampledTextures;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (storageTextures > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		size.descriptorCount = storageTextures;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (texelBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+		size.descriptorCount = texelBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	if (storageBuffers > 0)
+	{
+		size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		size.descriptorCount = storageBuffers;
+		descriptorPoolSizes.push_back(size);
+	}
+
+	pools.resize(MAX_FRAMES_IN_FLIGHT);
+}
+
+SharedDescriptorPools::~SharedDescriptorPools()
+{
+	auto vgfx = (Graphics *)Module::getInstance<Graphics>(Module::M_GRAPHICS);
+	if (vgfx == nullptr)
+		return;
+
+	vgfx->queueCleanUp([device = device, descriptorPools = pools]()
+	{
+		for (const auto &pools : descriptorPools)
+		{
+			for (const auto pool : pools)
+				vkDestroyDescriptorPool(device, pool, nullptr);
+		}
+	});
+}
+
+void SharedDescriptorPools::newFrame(uint64 frameIndex)
+{
+	if (!lastFrameIndex.hasValue || lastFrameIndex.value != frameIndex)
+	{
+		lastFrameIndex.set(frameIndex);
+		currentFrame = (size_t)((currentFrame + 1) % MAX_FRAMES_IN_FLIGHT);
+		currentPool = 0;
+		for (VkDescriptorPool pool : pools[currentFrame])
+			vkResetDescriptorPool(device, pool, 0);
+	}
+}
+
+void SharedDescriptorPools::createDescriptorPool()
+{
+	VkDescriptorPoolCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	createInfo.maxSets = DESCRIPTOR_POOL_SIZE;
+	createInfo.poolSizeCount = static_cast<uint32_t>(descriptorPoolSizes.size());
+	createInfo.pPoolSizes = descriptorPoolSizes.data();
+
+	VkDescriptorPool pool;
+	VkResult result = vkCreateDescriptorPool(device, &createInfo, nullptr, &pool);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan descriptor pool: %s", Vulkan::getErrorString(result));
+
+	pools[currentFrame].push_back(pool);
+}
+
+VkDescriptorSet SharedDescriptorPools::allocateDescriptorSet(const VkDescriptorSetLayout &descriptorSetLayout)
+{
+	if (pools[currentFrame].empty())
+		createDescriptorPool();
+
+	while (true)
+	{
+		VkDescriptorSetAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = pools[currentFrame][currentPool];
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &descriptorSetLayout;
+
+		VkDescriptorSet descriptorSet;
+		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
+
+		switch (result)
+		{
+		case VK_SUCCESS:
+			return descriptorSet;
+		case VK_ERROR_OUT_OF_POOL_MEMORY:
+			currentPool++;
+			if (pools[currentFrame].size() <= currentPool)
+				createDescriptorPool();
+			continue;
+		default:
+			throw love::Exception("Failed to allocate Vulkan descriptor set: %s", Vulkan::getErrorString(result));
+		}
+	}
+}
+
 class BindingMapper
 {
 public:
@@ -125,7 +248,7 @@ static VkShaderStageFlagBits getStageBit(ShaderStageType type)
 	case SHADERSTAGE_COMPUTE:
 		return VK_SHADER_STAGE_COMPUTE_BIT;
 	default:
-		throw love::Exception("invalid type");
+		throw love::Exception("Invalid shader stage type: %d", type);
 	}
 }
 
@@ -152,7 +275,7 @@ static EShLanguage getGlslShaderType(ShaderStageType stage)
 	case SHADERSTAGE_COMPUTE:
 		return EShLangCompute;
 	default:
-		throw love::Exception("unkonwn shader stage type");
+		throw love::Exception("Unknown shader stage type: %d", stage);
 	}
 }
 
@@ -187,10 +310,8 @@ bool Shader::loadVolatile()
 	compileShaders();
 	createDescriptorSetLayout();
 	createPipelineLayout();
-	createDescriptorPoolSizes();
-	descriptorPools.resize(MAX_FRAMES_IN_FLIGHT);
-	currentFrame = 0;
-	newFrame();
+	acquireDescriptorPools();
+	newFrame(vgfx->getRealFrameIndex());
 
 	return true;
 }
@@ -200,26 +321,26 @@ void Shader::unloadVolatile()
 	if (shaderModules.empty())
 		return;
 
+	vgfx->releaseDescriptorPools(descriptorPools);
+	descriptorPools = nullptr;
+
 	vgfx->queueCleanUp([shaderModules = std::move(shaderModules), device = device, descriptorSetLayout = descriptorSetLayout, pipelineLayout = pipelineLayout,
-		descriptorPools = descriptorPools, computePipeline = computePipeline, graphicsPipelines = std::move(graphicsPipelines)](){
-		for (const auto &pools : descriptorPools)
-		{
-			for (const auto pool : pools)
-				vkDestroyDescriptorPool(device, pool, nullptr);
-		}
+		computePipeline = computePipeline,
+		graphicsPipelinesCore = std::move(graphicsPipelinesDynamicState), graphicsPipelinesFull = std::move(graphicsPipelinesNoDynamicState)]() {
 		for (const auto shaderModule : shaderModules)
 			vkDestroyShaderModule(device, shaderModule, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		if (computePipeline != VK_NULL_HANDLE)
 			vkDestroyPipeline(device, computePipeline, nullptr);
-		for (const auto& kvp : graphicsPipelines)
+		for (const auto &kvp : graphicsPipelinesCore)
+			vkDestroyPipeline(device, kvp.second, nullptr);
+		for (const auto &kvp : graphicsPipelinesFull)
 			vkDestroyPipeline(device, kvp.second, nullptr);
 	});
 
 	shaderModules.clear();
 	shaderStages.clear();
-	descriptorPools.clear();
 }
 
 const std::vector<VkPipelineShaderStageCreateInfo> &Shader::getShaderStages() const
@@ -237,16 +358,12 @@ VkPipeline Shader::getComputePipeline() const
 	return computePipeline;
 }
 
-void Shader::newFrame()
+void Shader::newFrame(uint64 graphicsFrameIndex)
 {
-	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-
-	currentDescriptorPool = 0;
 	currentDescriptorSet = VK_NULL_HANDLE;
 	resourceDescriptorsDirty = true;
 
-	for (VkDescriptorPool pool : descriptorPools[currentFrame])
-		vkResetDescriptorPool(device, pool, 0);
+	descriptorPools->newFrame(graphicsFrameIndex);
 }
 
 void Shader::cmdPushDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint)
@@ -306,7 +423,7 @@ void Shader::cmdPushDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBind
 
 	if (resourceDescriptorsDirty || currentDescriptorSet == VK_NULL_HANDLE)
 	{
-		currentDescriptorSet = allocateDescriptorSet();
+		currentDescriptorSet = descriptorPools->allocateDescriptorSet(descriptorSetLayout);
 
 		for (auto &write : descriptorWrites)
 			write.dstSet = currentDescriptorSet;
@@ -334,8 +451,6 @@ void Shader::attach()
 			Vulkan::shaderSwitch();
 		}
 	}
-	else
-		vgfx->setComputeShader(this);
 }
 
 int Shader::getVertexAttributeIndex(const std::string &name)
@@ -364,83 +479,14 @@ void Shader::updateUniform(const UniformInfo *info, int count)
 	}
 }
 
-void Shader::sendTextures(const UniformInfo *info, graphics::Texture **textures, int count)
+void Shader::applyTexture(const UniformInfo *info, int i, love::graphics::Texture *texture, UniformType /*basetype*/, bool isdefault)
 {
-	bool issampler = info->baseType == UNIFORM_SAMPLER;
-	bool isstoragetex = info->baseType == UNIFORM_STORAGETEXTURE;
-
-	count = std::min(count, info->count);
-
-	if (current == this)
-		Graphics::flushBatchedDrawsGlobal();
-
-	for (int i = 0; i < count; i++)
-	{
-		love::graphics::Texture *tex = textures[i];
-		bool isdefault = tex == nullptr;
-
-		if (tex != nullptr)
-		{
-			if (!validateTexture(info, tex, false))
-				continue;
-		}
-		else
-		{
-			auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
-			tex = gfx->getDefaultTexture(info->textureType, info->dataBaseType, info->isDepthSampler);
-		}
-
-		int resourceindex = info->resourceIndex + i;
-		auto prevtexture = activeTextures[resourceindex];
-		activeTextures[resourceindex] = tex;
-		activeTextures[resourceindex]->retain();
-		if (prevtexture)
-			prevtexture->release();
-
-		if (tex != prevtexture)
-			setTextureDescriptor(info, (isdefault && (info->access & ACCESS_WRITE) != 0) ? nullptr : tex, i);
-	}
+	setTextureDescriptor(info, (isdefault && (info->access & ACCESS_WRITE) != 0) ? nullptr : texture, i);
 }
 
-void Shader::sendBuffers(const UniformInfo *info, love::graphics::Buffer **buffers, int count)
+void Shader::applyBuffer(const UniformInfo *info, int i, love::graphics::Buffer *buffer, UniformType /*basetype*/, bool isdefault)
 {
-	bool texelbinding = info->baseType == UNIFORM_TEXELBUFFER;
-	bool storagebinding = info->baseType == UNIFORM_STORAGEBUFFER;
-
-	count = std::min(count, info->count);
-
-	if (current == this)
-		Graphics::flushBatchedDrawsGlobal();
-
-	for (int i = 0; i < count; i++)
-	{
-		love::graphics::Buffer *buffer = buffers[i];
-		bool isdefault = buffer == nullptr;
-
-		if (buffer != nullptr)
-		{
-			if (!validateBuffer(info, buffer, false))
-				continue;
-		}
-		else
-		{
-			auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
-			if (texelbinding)
-				buffer = gfx->getDefaultTexelBuffer(info->dataBaseType);
-			else
-				buffer = gfx->getDefaultStorageBuffer();
-		}
-
-		int resourceindex = info->resourceIndex + i;
-		auto prevbuffer = activeBuffers[resourceindex];
-		activeBuffers[resourceindex] = buffer;
-		activeBuffers[resourceindex]->retain();
-		if (prevbuffer)
-			prevbuffer->release();
-
-		if (buffer != prevbuffer)
-			setBufferDescriptor(info, (isdefault && (info->access & ACCESS_WRITE) != 0) ? nullptr : buffer, i);
-	}
+	setBufferDescriptor(info, (isdefault && (info->access & ACCESS_WRITE) != 0) ? nullptr : buffer, i);
 }
 
 void Shader::buildLocalUniforms(spirv_cross::Compiler &comp, const spirv_cross::SPIRType &type, size_t baseoff, const std::string &basename)
@@ -594,6 +640,7 @@ void Shader::compileShaders()
 
 	BindingMapper bindingMapper(spv::DecorationBinding);
 	BindingMapper ioLocationMapper(spv::DecorationLocation);
+	BindingMapper vertexInputLocationMapper(spv::DecorationLocation);
 
 	for (int i = 0; i < SHADERSTAGE_MAX_ENUM; i++)
 	{
@@ -712,25 +759,21 @@ void Shader::compileShaders()
 
 		if (shaderStage == SHADERSTAGE_VERTEX)
 		{
-			int nextAttributeIndex = ATTRIB_MAX_ENUM;
-
-			// Don't skip unused inputs, vulkan still needs to have valid
-			// bindings for them.
+			// Use the mapper on known used inputs first, so their bindings get
+			// put into the map without being changed.
 			for (const auto &r : shaderResources.stage_inputs)
 			{
-				int index;
+				auto it = reflection.vertexInputs.find(r.name);
+				if (it != reflection.vertexInputs.end() && it->second >= 0)
+					vertexInputLocationMapper(comp, spirv, r.name, 1, r.id);
+			}
 
-				BuiltinVertexAttribute builtinAttribute;
-				if (graphics::getConstant(r.name.c_str(), builtinAttribute))
-					index = (int)builtinAttribute;
-				else
-					index = nextAttributeIndex++;
-
-				uint32_t locationOffset;
-				if (!comp.get_binary_offset_for_decoration(r.id, spv::DecorationLocation, locationOffset))
-					throw love::Exception("could not get binary offset for vertex attribute %s location", r.name.c_str());
-
-				spirv[locationOffset] = (uint32_t)index;
+			for (const auto &r : shaderResources.stage_inputs)
+			{
+				// Don't skip unused inputs, vulkan still needs to have valid
+				// bindings for them. This will also avoid shuffling intentional
+				// used bindings because of the earlier loop.
+				int index = (int)vertexInputLocationMapper(comp, spirv, r.name, 1, r.id);
 
 				DataBaseType basetype = DATA_BASETYPE_FLOAT;
 
@@ -779,8 +822,9 @@ void Shader::compileShaders()
 
 		VkShaderModule shaderModule;
 
-		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
-			throw love::Exception("failed to create shader module");
+		VkResult result = vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan shader module: %s", Vulkan::getErrorString(result));
 
 		std::string debugname = getShaderStageDebugName(shaderStage);
 		if (!debugname.empty() && vgfx->getEnabledOptionalInstanceExtensions().debugInfo)
@@ -846,12 +890,18 @@ void Shader::compileShaders()
 	descriptorBufferViews.clear();
 	descriptorBufferViews.reserve(numBufferViews);
 
+	allTextureInfo.clear();
+	allTextureInfo.reserve(numTextures);
+	storageBufferInfo.clear();
+	storageBufferInfo.reserve(numBuffers);
+
 	if (localUniformData.size() > 0)
 	{
 		VkDescriptorBufferInfo bufferInfo{};
 		bufferInfo.range = localUniformData.size();
 
 		descriptorBuffers.push_back(bufferInfo);
+		storageBufferInfo.push_back({ nullptr, ACCESS_READ }); // Dummy value.
 
 		VkWriteDescriptorSet write{};
 		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -875,6 +925,8 @@ void Shader::compileShaders()
 		{
 			VkDescriptorImageInfo imageInfo{};
 			descriptorImages.push_back(imageInfo);
+
+			allTextureInfo.push_back({ nullptr, info.access });
 
 			auto texture = activeTextures[info.resourceIndex + i];
 			if (texture != nullptr)
@@ -904,6 +956,8 @@ void Shader::compileShaders()
 		{
 			VkDescriptorImageInfo imageInfo{};
 			descriptorImages.push_back(imageInfo);
+
+			allTextureInfo.push_back({ nullptr, info.access });
 
 			auto texture = activeTextures[info.resourceIndex + i];
 			if (texture != nullptr)
@@ -961,6 +1015,8 @@ void Shader::compileShaders()
 		{
 			VkDescriptorBufferInfo bufferInfo{};
 			descriptorBuffers.push_back(bufferInfo);
+
+			storageBufferInfo.push_back({ nullptr, info.access });
 
 			auto buffer = activeBuffers[info.resourceIndex + i];
 			if (buffer != nullptr)
@@ -1022,8 +1078,9 @@ void Shader::createDescriptorSetLayout()
 	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 
-	if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
-		throw love::Exception("failed to create descriptor set layout");
+	VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan descriptor set layout: %s", Vulkan::getErrorString(result));
 }
 
 void Shader::createPipelineLayout()
@@ -1034,8 +1091,9 @@ void Shader::createPipelineLayout()
 	pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
 	pipelineLayoutInfo.pushConstantRangeCount = 0;
 
-	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
-		throw love::Exception("failed to create pipeline layout");
+	VkResult result = vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+	if (result != VK_SUCCESS)
+		throw love::Exception("Failed to create Vulkan pipeline layout: %s", Vulkan::getErrorString(result));
 
 	if (isCompute)
 	{
@@ -1046,67 +1104,35 @@ void Shader::createPipelineLayout()
 		computeInfo.stage = shaderStages.at(0);
 		computeInfo.layout = pipelineLayout;
 
-		if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &computePipeline) != VK_SUCCESS)
-			throw love::Exception("failed to create compute pipeline");
+		result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &computePipeline);
+		if (result != VK_SUCCESS)
+			throw love::Exception("Failed to create Vulkan compute pipeline: %s", Vulkan::getErrorString(result));
 	}
 }
 
-void Shader::createDescriptorPoolSizes()
+static int getDescriptorPoolSize(const std::map<std::string, Shader::UniformInfo> &uniforms)
 {
+	int size = 0;
+	for (const auto &entry : uniforms)
+	{
+		if (entry.second.active)
+			size += entry.second.count;
+	}
+	return size;
+}
+
+void Shader::acquireDescriptorPools()
+{
+	int dynamicUniformBuffers = 0;
 	if (!localUniformData.empty())
-	{
-		VkDescriptorPoolSize size{};
-		size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-		size.descriptorCount = 1;
+		dynamicUniformBuffers++;
 
-		descriptorPoolSizes.push_back(size);
-	}
+	int sampledTextures = getDescriptorPoolSize(reflection.sampledTextures);
+	int storageTextures = getDescriptorPoolSize(reflection.storageTextures);
+	int texelBuffers = getDescriptorPoolSize(reflection.texelBuffers);
+	int storageBuffers = getDescriptorPoolSize(reflection.storageBuffers);
 
-	for (const auto &entry : reflection.allUniforms)
-	{
-		if (!entry.second->active)
-			continue;
-
-		VkDescriptorPoolSize size{};
-		auto type = Vulkan::getDescriptorType(entry.second->baseType);
-		if (type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
-			continue;
-
-		size.type = type;
-		size.descriptorCount = entry.second->count;
-		descriptorPoolSizes.push_back(size);
-	}
-}
-
-void Shader::setVideoTextures(graphics::Texture *ytexture, graphics::Texture *cbtexture, graphics::Texture *crtexture)
-{
-	std::array<graphics::Texture*, 3> textures = {
-		ytexture, cbtexture, crtexture
-	};
-
-	std::array<BuiltinUniform, 3> builtIns = {
-		BUILTIN_TEXTURE_VIDEO_Y,
-		BUILTIN_TEXTURE_VIDEO_CB,
-		BUILTIN_TEXTURE_VIDEO_CR,
-	};
-
-	static_assert(textures.size() == builtIns.size(), "expected number of textures to be the same");
-
-	for (size_t i = 0; i < textures.size(); i++)
-	{
-		const UniformInfo *u = builtinUniformInfo[builtIns[i]];
-		if (u != nullptr)
-		{
-			auto prevtexture = activeTextures[u->resourceIndex];
-			textures[i]->retain();
-			if (prevtexture)
-				prevtexture->release();
-			activeTextures[u->resourceIndex] = textures[i];
-
-			if (textures[i] != prevtexture)
-				setTextureDescriptor(u, textures[i], 0);
-		}
-	}
+	descriptorPools = vgfx->acquireDescriptorPools(dynamicUniformBuffers, sampledTextures, storageTextures, texelBuffers, storageBuffers);
 }
 
 void Shader::setMainTex(graphics::Texture *texture)
@@ -1134,10 +1160,14 @@ void Shader::setTextureDescriptor(const UniformInfo *info, love::graphics::Textu
 
 	// Samplers may change after this call, so they're set just before the
 	// descriptor set is used instead of here.
-	imageInfo.imageLayout = vkTexture != nullptr ? vkTexture->getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
-	imageInfo.imageView = vkTexture != nullptr ? (VkImageView)vkTexture->getRenderTargetHandle() : VK_NULL_HANDLE;
-
-	resourceDescriptorsDirty = true;
+	VkImageView view = vkTexture != nullptr ? (VkImageView)vkTexture->getHandle() : VK_NULL_HANDLE;
+	if (view != imageInfo.imageView)
+	{
+		imageInfo.imageLayout = vkTexture != nullptr ? vkTexture->getImageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+		imageInfo.imageView = view;
+		allTextureInfo[info->bindingStartIndex + index].texture = texture;
+		resourceDescriptorsDirty = true;
+	}
 }
 
 void Shader::setBufferDescriptor(const UniformInfo *info, love::graphics::Buffer *buffer, int index)
@@ -1145,72 +1175,48 @@ void Shader::setBufferDescriptor(const UniformInfo *info, love::graphics::Buffer
 	if (info->baseType == UNIFORM_STORAGEBUFFER)
 	{
 		VkDescriptorBufferInfo &bufferInfo = descriptorBuffers[info->bindingStartIndex + index];
-		bufferInfo.buffer = buffer != nullptr ? (VkBuffer)buffer->getHandle() : VK_NULL_HANDLE;
-		bufferInfo.offset = 0;
-		bufferInfo.range = buffer != nullptr ? buffer->getSize() : 0;
+		VkBuffer vkbuffer = buffer != nullptr ? (VkBuffer)buffer->getHandle() : VK_NULL_HANDLE;
+		VkDeviceSize range = buffer != nullptr ? buffer->getSize() : 0;
+		if (vkbuffer != bufferInfo.buffer || bufferInfo.offset != 0 || range != bufferInfo.range)
+		{
+			bufferInfo.buffer = vkbuffer;
+			bufferInfo.offset = 0;
+			bufferInfo.range = range;
+			storageBufferInfo[info->bindingStartIndex + index].buffer = buffer;
+			resourceDescriptorsDirty = true;
+		}
 	}
 	else if (info->baseType == UNIFORM_TEXELBUFFER)
 	{
-		descriptorBufferViews[info->bindingStartIndex + index] = buffer != nullptr ? (VkBufferView)buffer->getTexelBufferHandle() : VK_NULL_HANDLE;
-	}
-
-	resourceDescriptorsDirty = true;
-}
-
-void Shader::createDescriptorPool()
-{
-	VkDescriptorPoolCreateInfo createInfo{};
-	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	createInfo.maxSets = DESCRIPTOR_POOL_SIZE;
-	createInfo.poolSizeCount = static_cast<uint32_t>(descriptorPoolSizes.size());
-	createInfo.pPoolSizes = descriptorPoolSizes.data();
-
-	VkDescriptorPool pool;
-	if (vkCreateDescriptorPool(device, &createInfo, nullptr, &pool) != VK_SUCCESS)
-		throw love::Exception("failed to create descriptor pool");
-
-	descriptorPools[currentFrame].push_back(pool);
-}
-
-VkDescriptorSet Shader::allocateDescriptorSet()
-{
-	if (descriptorPools[currentFrame].empty())
-		createDescriptorPool();
-
-	while (true)
-	{
-		VkDescriptorSetAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPools[currentFrame][currentDescriptorPool];
-		allocInfo.descriptorSetCount = 1;
-		allocInfo.pSetLayouts = &descriptorSetLayout;
-
-		VkDescriptorSet descriptorSet;
-		VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
-
-		switch (result)
+		VkBufferView view = buffer != nullptr ? (VkBufferView)buffer->getTexelBufferHandle() : VK_NULL_HANDLE;
+		if (view != descriptorBufferViews[info->bindingStartIndex + index])
 		{
-		case VK_SUCCESS:
-			return descriptorSet;
-		case VK_ERROR_OUT_OF_POOL_MEMORY:
-			currentDescriptorPool++;
-			if (descriptorPools[currentFrame].size() <= currentDescriptorPool)
-				createDescriptorPool();
-			continue;
-		default:
-			throw love::Exception("failed to allocate descriptor set");
+			descriptorBufferViews[info->bindingStartIndex + index] = view;
+			resourceDescriptorsDirty = true;
 		}
 	}
 }
 
-VkPipeline Shader::getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfiguration &configuration)
+VkPipeline Shader::getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfigurationCore &configuration)
 {
-	auto it = graphicsPipelines.find(configuration);
-	if (it != graphicsPipelines.end())
+	auto it = graphicsPipelinesDynamicState.find(configuration);
+	if (it != graphicsPipelinesDynamicState.end())
 		return it->second;
 
-	VkPipeline pipeline = vgfx->createGraphicsPipeline(this, configuration);
-	graphicsPipelines.insert({ configuration, pipeline });
+	VkPipeline pipeline = vgfx->createGraphicsPipeline(this, configuration, nullptr);
+	graphicsPipelinesDynamicState.insert({ configuration, pipeline });
+	
+	return pipeline;
+}
+
+VkPipeline Shader::getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfigurationFull &configuration)
+{
+	auto it = graphicsPipelinesNoDynamicState.find(configuration);
+	if (it != graphicsPipelinesNoDynamicState.end())
+		return it->second;
+
+	VkPipeline pipeline = vgfx->createGraphicsPipeline(this, configuration.core, &configuration.noDynamicState);
+	graphicsPipelinesNoDynamicState.insert({ configuration, pipeline });
 	
 	return pipeline;
 }

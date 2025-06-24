@@ -117,16 +117,6 @@ if(MEGA)
 	# binary (in e.g. the installer). Example: msvcp140.dll.
 	set(LOVE_MSVC_DLLS ${MEGA_MSVC_DLLS})
 
-	if(APPLE)
-		# Some files do #include <SDL2/SDL.h>, but building with megasource
-		# requires #include <SDL.h>.
-		add_definitions(-DLOVE_MACOSX_SDL_DIRECT_INCLUDE)
-	endif ()
-
-	# SDL2 links with some DirectX libraries, and we apparently also
-	# pull those libraries in for linkage because we link with SDL2.
-	set(LOVE_LINK_DIRS ${SDL_LINK_DIR})
-
 	# These DLLs are moved next to the love binary in a post-build step to
 	# love runnable from inside Visual Studio.
 	#
@@ -135,7 +125,6 @@ if(MEGA)
 	# We detect whether or not each item is a target, and take the appropriate
 	# action.
 	set(LOVE_MOVE_DLLS
-		${MEGA_SDL2}
 		${MEGA_SDL3}
 		${MEGA_OPENAL}
 	)
@@ -147,7 +136,7 @@ if(MEGA)
 		set(LOVE_EXTRA_DLLS)
 	endif()
 
-	target_link_libraries(lovedep::SDL INTERFACE ${MEGA_SDL2} ${MEGA_SDL2MAIN} ${MEGA_SDL3})
+	target_link_libraries(lovedep::SDL INTERFACE ${MEGA_SDL3})
 	target_link_libraries(lovedep::Freetype INTERFACE ${MEGA_FREETYPE})
 	target_link_libraries(lovedep::Harfbuzz INTERFACE ${MEGA_HARFBUZZ})
 	target_link_libraries(lovedep::OpenAL INTERFACE ${MEGA_OPENAL})
@@ -186,9 +175,9 @@ Please see https://github.com/love2d/megasource
 	# required for enet
 	add_definitions(-D HAS_SOCKLEN_T)
 
-	find_package(SDL2 2.0.9 REQUIRED CONFIG COMPONENTS SDL2main)
-	target_include_directories(lovedep::SDL INTERFACE ${SDL2_INCLUDE_DIRS})
-	target_link_libraries(lovedep::SDL INTERFACE ${SDL2_LIBRARIES})
+	find_package(SDL3 3.1.3 REQUIRED CONFIG)
+	target_include_directories(lovedep::SDL INTERFACE ${SDL3_INCLUDE_DIRS})
+	target_link_libraries(lovedep::SDL INTERFACE ${SDL3_LIBRARIES})
 
 	find_package(Freetype REQUIRED)
 	target_include_directories(lovedep::Freetype INTERFACE ${FREETYPE_INCLUDE_DIRS})
@@ -807,8 +796,6 @@ target_link_libraries(love_joystick_root PUBLIC
 add_library(love_joystick_sdl STATIC
 	src/modules/joystick/sdl/Joystick.cpp
 	src/modules/joystick/sdl/Joystick.h
-	src/modules/joystick/sdl/JoystickSDL3.cpp
-	src/modules/joystick/sdl/JoystickSDL3.h
 	src/modules/joystick/sdl/JoystickModule.cpp
 	src/modules/joystick/sdl/JoystickModule.h
 )
@@ -1189,6 +1176,7 @@ target_link_libraries(love_timer PUBLIC
 #
 
 add_library(love_touch_root STATIC
+	src/modules/touch/Touch.cpp
 	src/modules/touch/Touch.h
 	src/modules/touch/wrap_Touch.cpp
 	src/modules/touch/wrap_Touch.h
@@ -1435,6 +1423,7 @@ add_library(love_3p_glslang
 	src/libraries/glslang/glslang/Include/ShHandle.h
 	src/libraries/glslang/glslang/Include/SpirvIntrinsics.h
 	src/libraries/glslang/glslang/Include/Types.h
+	src/libraries/glslang/glslang/Include/visibility.h
 	src/libraries/glslang/glslang/MachineIndependent/preprocessor/Pp.cpp
 	src/libraries/glslang/glslang/MachineIndependent/preprocessor/PpAtom.cpp
 	src/libraries/glslang/glslang/MachineIndependent/preprocessor/PpContext.cpp
@@ -1507,10 +1496,11 @@ add_library(love_3p_glslang
 	src/libraries/glslang/SPIRV/Logger.h
 	src/libraries/glslang/SPIRV/NonSemanticDebugPrintf.h
 	src/libraries/glslang/SPIRV/NonSemanticShaderDebugInfo100.h
-	src/libraries/glslang/SPIRV/spirv.hpp
+	src/libraries/glslang/SPIRV/spirv.hpp11
 	src/libraries/glslang/SPIRV/SpvBuilder.cpp
 	src/libraries/glslang/SPIRV/SpvBuilder.h
 	src/libraries/glslang/SPIRV/spvIR.h
+	src/libraries/glslang/SPIRV/spvUtil.h
 	src/libraries/glslang/SPIRV/SpvPostProcess.cpp
 	src/libraries/glslang/SPIRV/SPVRemapper.cpp
 	src/libraries/glslang/SPIRV/SPVRemapper.h
@@ -1910,8 +1900,6 @@ include_directories(
 	src/modules
 )
 
-link_directories(${LOVE_LINK_DIRS})
-
 if(MINGW)
 	# UTF-16 flags passed to windres. windres invokes gcc as preprocessor
 	# -> gcc outputs utf8, so windres must read-in codepage 65001 (utf8)
@@ -1987,7 +1975,7 @@ love_group_projects(NAME "liblove" NESTED TARGETS ${LIBLOVE_DEPENDENCIES})
 love_group_projects(NAME "liblove/libraries" NESTED TARGETS ${LIBLOVE_LIBRARIES})
 love_group_projects(NAME "liblove" TARGETS liblove ${LOVE_EXTRA_DEPENDECIES})
 
-love_group_projects(NAME "lovedep" TARGETS lovedep::SDL2 lovedep::Freetype lovedep::Harfbuzz lovedep::OpenAL lovedep::Modplug lovedep::Theora lovedep::Vorbis lovedep::Ogg lovedep::Zlib lovedep::Lua)
+love_group_projects(NAME "lovedep" TARGETS lovedep::SDL lovedep::Freetype lovedep::Harfbuzz lovedep::OpenAL lovedep::Modplug lovedep::Theora lovedep::Vorbis lovedep::Ogg lovedep::Zlib lovedep::Lua)
 love_group_projects(NAME "lovedep" TARGETS lua51 alcommon al-excommon harfbuzz-subset zlib)
 
 
@@ -2089,6 +2077,7 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
 	# CPack
 	###################################
 	install(TARGETS love lovec liblove RUNTIME DESTINATION .)
+	install(PROGRAMS $<TARGET_FILE:${MEGA_SDL3}> DESTINATION .)
 
 	# Our install script (and NSIS) doesn't fully support Windows ARM64 yet.
 	if(MEGA_ARM64)

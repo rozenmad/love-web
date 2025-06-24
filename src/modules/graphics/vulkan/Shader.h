@@ -46,47 +46,101 @@ namespace graphics
 namespace vulkan
 {
 
-struct GraphicsPipelineConfiguration
+struct GraphicsPipelineConfigurationCore
 {
 	VkRenderPass renderPass;
-	VertexAttributes vertexAttributes;
+	VertexAttributesID attributesID;
 	bool wireFrame;
-	BlendState blendState;
+	uint32 blendStateKey;
 	ColorChannelMask colorChannelMask;
 	VkSampleCountFlagBits msaaSamples;
 	uint32_t numColorAttachments;
 	PrimitiveType primitiveType;
 	uint64 packedColorAttachmentFormats;
 
-	struct DynamicState
+	GraphicsPipelineConfigurationCore()
 	{
-		CullMode cullmode = CULL_NONE;
-		Winding winding = WINDING_MAX_ENUM;
-		StencilAction stencilAction = STENCIL_MAX_ENUM;
-		CompareMode stencilCompare = COMPARE_MAX_ENUM;
-		DepthState depthState{};
-	} dynamicState;
-
-	GraphicsPipelineConfiguration()
-	{
-		memset(this, 0, sizeof(GraphicsPipelineConfiguration));
+		memset(this, 0, sizeof(GraphicsPipelineConfigurationCore));
 	}
 
-	bool operator==(const GraphicsPipelineConfiguration &other) const
+	bool operator==(const GraphicsPipelineConfigurationCore &other) const
 	{
-		return memcmp(this, &other, sizeof(GraphicsPipelineConfiguration)) == 0;
+		return memcmp(this, &other, sizeof(GraphicsPipelineConfigurationCore)) == 0;
 	}
 };
 
-struct GraphicsPipelineConfigurationHasher
+struct GraphicsPipelineConfigurationCoreHasher
 {
-	size_t operator() (const GraphicsPipelineConfiguration &configuration) const
+	size_t operator() (const GraphicsPipelineConfigurationCore &configuration) const
 	{
-		return XXH32(&configuration, sizeof(GraphicsPipelineConfiguration), 0);
+		return XXH32(&configuration, sizeof(GraphicsPipelineConfigurationCore), 0);
+	}
+};
+
+struct GraphicsPipelineConfigurationNoDynamicState
+{
+	CullMode cullmode = CULL_NONE;
+	Winding winding = WINDING_MAX_ENUM;
+	StencilAction stencilAction = STENCIL_MAX_ENUM;
+	CompareMode stencilCompare = COMPARE_MAX_ENUM;
+	DepthState depthState{};
+};
+
+struct GraphicsPipelineConfigurationFull
+{
+	GraphicsPipelineConfigurationCore core;
+	GraphicsPipelineConfigurationNoDynamicState noDynamicState;
+
+	GraphicsPipelineConfigurationFull()
+	{
+		memset(this, 0, sizeof(GraphicsPipelineConfigurationFull));
+	}
+
+	bool operator==(const GraphicsPipelineConfigurationFull &other) const
+	{
+		return memcmp(this, &other, sizeof(GraphicsPipelineConfigurationFull)) == 0;
+	}
+};
+
+struct GraphicsPipelineConfigurationFullHasher
+{
+	size_t operator() (const GraphicsPipelineConfigurationFull &configuration) const
+	{
+		return XXH32(&configuration, sizeof(GraphicsPipelineConfigurationFull), 0);
 	}
 };
 
 class Graphics;
+
+class SharedDescriptorPools
+{
+public:
+
+	SharedDescriptorPools(VkDevice device, int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers);
+	virtual ~SharedDescriptorPools();
+
+	VkDescriptorSet allocateDescriptorSet(const VkDescriptorSetLayout &descriptorSetLayout);
+
+	void newFrame(uint64 frameIndex);
+
+	int dynamicUniformBuffers = 0;
+	int sampledTextures = 0;
+	int storageTextures = 0;
+	int texelBuffers = 0;
+	int storageBuffers = 0;
+
+private:
+
+	void createDescriptorPool();
+
+	std::vector<VkDescriptorPoolSize> descriptorPoolSizes;
+	std::vector<std::vector<VkDescriptorPool>> pools;
+	Optional<uint64> lastFrameIndex;
+	size_t currentFrame = 0;
+	uint32 currentPool = 0;
+	VkDevice device = VK_NULL_HANDLE;
+
+};
 
 class Shader final
 	: public graphics::Shader
@@ -98,6 +152,18 @@ public:
 	{
 		int index;
 		DataBaseType baseType;
+	};
+
+	struct TextureInfo
+	{
+		love::graphics::Texture *texture;
+		Access access;
+	};
+
+	struct BufferInfo
+	{
+		love::graphics::Buffer *buffer;
+		Access access;
 	};
 
 	Shader(StrongRef<love::graphics::ShaderStage> stages[], const CompileOptions &options);
@@ -112,7 +178,7 @@ public:
 
 	const VkPipelineLayout getGraphicsPipelineLayout() const;
 
-	void newFrame();
+	void newFrame(uint64 graphicsFrameIndex);
 
 	void cmdPushDescriptorSets(VkCommandBuffer, VkPipelineBindPoint);
 
@@ -129,34 +195,31 @@ public:
 
 	void updateUniform(const UniformInfo *info, int count) override;
 
-	void sendTextures(const UniformInfo *info, graphics::Texture **textures, int count) override;
-	void sendBuffers(const UniformInfo *info, love::graphics::Buffer **buffers, int count) override;
-
-	void setVideoTextures(graphics::Texture *ytexture, graphics::Texture *cbtexture, graphics::Texture *crtexture) override;
-
 	void setMainTex(graphics::Texture *texture);
 
-	VkPipeline getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfiguration &configuration);
+	VkPipeline getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfigurationCore &configuration);
+	VkPipeline getCachedGraphicsPipeline(Graphics *vgfx, const GraphicsPipelineConfigurationFull &configuration);
+
+	const std::vector<TextureInfo> &getActiveTextureInfo() const { return allTextureInfo; }
+	const std::vector<BufferInfo> &getActiveStorageBufferInfo() const { return storageBufferInfo; }
 
 private:
 	void compileShaders();
 	void createDescriptorSetLayout();
 	void createPipelineLayout();
-	void createDescriptorPoolSizes();
+	void acquireDescriptorPools();
 	void buildLocalUniforms(spirv_cross::Compiler &comp, const spirv_cross::SPIRType &type, size_t baseoff, const std::string &basename);
-	void createDescriptorPool();
-	VkDescriptorSet allocateDescriptorSet();
 
 	void setTextureDescriptor(const UniformInfo *info, love::graphics::Texture *texture, int index);
 	void setBufferDescriptor(const UniformInfo *info, love::graphics::Buffer *buffer, int index);
+
+	void applyTexture(const UniformInfo *info, int i, love::graphics::Texture *texture, UniformType basetype, bool isdefault) override;
+	void applyBuffer(const UniformInfo *info, int i, love::graphics::Buffer *buffer, UniformType basetype, bool isdefault) override;
 
 	VkPipeline computePipeline = VK_NULL_HANDLE;
 
 	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-	std::vector<VkDescriptorPoolSize> descriptorPoolSizes;
-
-	std::vector<std::vector<VkDescriptorPool>> descriptorPools;
 
 	std::vector<VkDescriptorBufferInfo> descriptorBuffers;
 	std::vector<VkDescriptorImageInfo> descriptorImages;
@@ -166,8 +229,13 @@ private:
 	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 	std::vector<VkShaderModule> shaderModules;
 
+	std::vector<TextureInfo> allTextureInfo;
+	std::vector<BufferInfo> storageBufferInfo;
+
 	Graphics *vgfx = nullptr;
 	VkDevice device = VK_NULL_HANDLE;
+
+	SharedDescriptorPools *descriptorPools = nullptr;
 
 	bool isCompute = false;
 	bool resourceDescriptorsDirty = false;
@@ -183,10 +251,8 @@ private:
 
 	std::unordered_map<std::string, AttributeInfo> attributes;
 
-	std::unordered_map<GraphicsPipelineConfiguration, VkPipeline, GraphicsPipelineConfigurationHasher> graphicsPipelines;
-
-	uint32_t currentFrame = 0;
-	uint32_t currentDescriptorPool = 0;
+	std::unordered_map<GraphicsPipelineConfigurationCore, VkPipeline, GraphicsPipelineConfigurationCoreHasher> graphicsPipelinesDynamicState;
+	std::unordered_map<GraphicsPipelineConfigurationFull, VkPipeline, GraphicsPipelineConfigurationFullHasher> graphicsPipelinesNoDynamicState;
 };
 
 }

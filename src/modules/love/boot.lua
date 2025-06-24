@@ -87,18 +87,23 @@ function love.boot()
 	local identity = ""
 	if not can_has_game and o.game.set and o.game.arg[1] then
 		local nouri = o.game.arg[1]
+		local full_source = nouri
 
-		if nouri:sub(1, 7) == "file://" then
-			nouri = uridecode(nouri:sub(8))
-		end
+		-- Ignore "content://" uri as it's used to open a file-descriptor
+		-- directly for Android.
+		if nouri:sub(1, 10) ~= "content://" then
+			if nouri:sub(1, 7) == "file://" then
+				nouri = uridecode(nouri:sub(8))
+			end
 
-		local full_source = love.path.getFull(nouri)
-		local source_leaf = love.path.leaf(full_source)
+			full_source = love.path.getFull(nouri)
+			local source_leaf = love.path.leaf(full_source)
 
-		if source_leaf:match("%.lua$") then
-			main_file = source_leaf
-			custom_main_file = true
-			full_source = love.path.getFull(full_source:sub(1, -(#source_leaf + 1)))
+			if source_leaf:match("%.lua$") then
+				main_file = source_leaf
+				custom_main_file = true
+				full_source = love.path.getFull(full_source:sub(1, -(#source_leaf + 1)))
+			end
 		end
 
 		can_has_game = pcall(love.filesystem.setSource, full_source)
@@ -176,6 +181,12 @@ function love.init()
 			centered = true,
 			usedpiscale = true,
 		},
+		graphics = {
+			gammacorrect = false,
+			lowpower = false,
+			renderers = nil,
+			excluderenderers = nil,
+		},
 		modules = {
 			data = true,
 			event = true,
@@ -205,11 +216,11 @@ function love.init()
 		identity = false,
 		appendidentity = false,
 		externalstorage = false, -- Only relevant for Android.
-		accelerometerjoystick = nil, -- Only relevant for Android / iOS, deprecated.
-		gammacorrect = false,
+		gammacorrect = nil, -- Moved to t.graphics.
 		highdpi = false,
-		renderers = nil,
-		excluderenderers = nil,
+		renderers = nil, -- Moved to t.graphics.
+		excluderenderers = nil, -- Moved to t.graphics.
+		trackpadtouch = false,
 	}
 
 	-- Console hack, part 1.
@@ -238,24 +249,31 @@ function love.init()
 		love._openConsole()
 	end
 
-	-- Hack for disabling accelerometer-as-joystick on Android / iOS.
-	if love._setAccelerometerAsJoystick then
-		love._setAccelerometerAsJoystick(c.accelerometerjoystick)
+	if love._setGammaCorrect then
+		local gammacorrect = false
+		if type(c.graphics) == "table" then
+			gammacorrect = c.graphics.gammacorrect
+		end
+		if c.gammacorrect ~= nil then
+			love.markDeprecated(2, "t.gammacorrect in love.conf", "field", "replaced", "t.graphics.gammacorrect")
+			gammacorrect = c.gammacorrect
+		end
+		love._setGammaCorrect(gammacorrect)
 	end
 
-	if love._setGammaCorrect then
-		love._setGammaCorrect(c.gammacorrect)
+	if love._setLowPowerPreferred and type(c.graphics) == "table" then
+		love._setLowPowerPreferred(c.graphics.lowpower)
 	end
 
 	if love._setRenderers then
 		local renderers = love._getDefaultRenderers()
 		if type(c.renderers) == "table" then
-			renderers = {}
-			for i,v in ipairs(c.renderers) do
-				renderers[i] = v
-			end
+			love.markDeprecated(2, "t.renderers in love.conf", "field", "replaced", "t.graphics.renderers")
+			renderers = c.renderers
 		end
-
+		if type(c.graphics) == "table" and type(c.graphics.renderers) == "table" then
+			renderers = c.graphics.renderers
+		end
 		if love.arg.options.renderers.set then
 			local renderersstr = love.arg.options.renderers.arg[1]
 			renderers = {}
@@ -263,7 +281,15 @@ function love.init()
 				table.insert(renderers, r)
 			end
 		end
-		local excluderenderers = c.excluderenderers
+
+		local excluderenderers = nil
+		if type(c.excluderenderers) == "table" then
+			love.markDeprecated(2, "t.excluderenderers in love.conf", "field", "replaced", "t.graphics.excluderenderers")
+			excluderenderers = c.excluderenderers
+		end
+		if type(c.graphics) == "table" and type(c.graphics.excluderenderers) == "table" then
+			excluderenderers = c.graphics.excluderenderers
+		end
 		if love.arg.options.excluderenderers.set then
 			local excludestr = love.arg.options.excluderenderers.arg[1]
 			excluderenderers = {}
@@ -288,6 +314,10 @@ function love.init()
 
 	if love._setHighDPIAllowed then
 		love._setHighDPIAllowed(c.highdpi)
+	end
+
+	if love._setTrackpadTouch then
+		love._setTrackpadTouch(c.trackpadtouch)
 	end
 
 	if love._setAudioMixWithSystem then
@@ -353,6 +383,11 @@ function love.init()
 
 	-- Setup window here.
 	if c.window and c.modules.window then
+		if c.window.icon then
+			assert(love.image, "If an icon is set in love.conf, love.image must be loaded.")
+			love.window.setIcon(love.image.newImageData(c.window.icon))
+		end
+
 		love.window.setTitle(c.window.title or c.title)
 		assert(love.window.setMode(c.window.width, c.window.height,
 		{
@@ -374,10 +409,6 @@ function love.init()
 			x = c.window.x,
 			y = c.window.y,
 		}), "Could not set window mode")
-		if c.window.icon then
-			assert(love.image, "If an icon is set in love.conf, love.image must be loaded!")
-			love.window.setIcon(love.image.newImageData(c.window.icon))
-		end
 	end
 
 	-- The first couple event pumps on some systems (e.g. macOS) can take a
@@ -410,6 +441,8 @@ function love.init()
 	end
 end
 
+local xpcall = xpcall
+local coroutine_yield = coroutine.yield
 local print, debug, tostring = print, debug, tostring
 
 local function error_printer(msg, layer)
@@ -422,6 +455,7 @@ end
 
 return function()
 	local func
+	local setModalDrawFunc = false
 	local inerror = false
 
 	local function deferErrhand(...)
@@ -429,9 +463,12 @@ return function()
 		local handler = (not inerror and errhand) or error_printer
 		inerror = true
 		func = handler(...)
+		inerror = false
 	end
 
 	local function earlyinit()
+		func = nil
+
 		-- If love.boot fails, return 1 and finish immediately
 		local result = xpcall(love.boot, error_printer)
 		if not result then return 1 end
@@ -447,15 +484,23 @@ return function()
 		result, main = xpcall(love.run, deferErrhand)
 		if result then
 			func = main
+			setModalDrawFunc = true
+		elseif inerror then -- Error in error handler
+			print("Error: " .. tostring(main))
 		end
 	end
 
 	func = earlyinit
+	local prevFunc = nil
 
 	while func do
+		if setModalDrawFunc and love.event and func ~= prevFunc then
+			prevFunc = func
+			love.event._setDefaultModalDrawCallback(func)
+		end
 		local _, retval, restartvalue = xpcall(func, deferErrhand)
 		if retval then return retval, restartvalue end
-		coroutine.yield()
+		coroutine_yield()
 	end
 
 	return 1

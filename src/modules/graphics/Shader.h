@@ -245,8 +245,8 @@ public:
 
 	virtual void updateUniform(const UniformInfo *info, int count) = 0;
 
-	virtual void sendTextures(const UniformInfo *info, Texture **textures, int count) = 0;
-	virtual void sendBuffers(const UniformInfo *info, Buffer **buffers, int count) = 0;
+	void sendTextures(const UniformInfo *info, Texture **textures, int count);
+	void sendBuffers(const UniformInfo *info, Buffer **buffers, int count);
 
 	/**
 	 * Gets whether a uniform with the specified name exists and is actively
@@ -257,7 +257,7 @@ public:
 	/**
 	 * Sets the textures used when rendering a video. For internal use only.
 	 **/
-	virtual void setVideoTextures(Texture *ytexture, Texture *cbtexture, Texture *crtexture) = 0;
+	void setVideoTextures(Texture *ytexture, Texture *cbtexture, Texture *crtexture);
 
 	const UniformInfo *getMainTextureInfo() const;
 	void validateDrawState(PrimitiveType primtype, Texture *maintexture) const;
@@ -268,6 +268,8 @@ public:
 
 	bool isUsingDeprecatedTextureFunctions() const;
 	bool isUsingDeprecatedTextureUniform() const;
+
+	const std::string& getUnsetVertexInputLocationsString() const { return unsetVertexInputLocationsString; }
 
 	static SourceInfo getSourceInfo(const std::string &src);
 	static std::string createShaderStageCode(Graphics *gfx, ShaderStageType stage, const std::string &code, const CompileOptions &options, const SourceInfo &info, bool gles, bool checksystemfeatures);
@@ -289,6 +291,8 @@ protected:
 
 	struct Reflection
 	{
+		std::map<std::string, int> vertexInputs;
+
 		std::map<std::string, UniformInfo> texelBuffers;
 		std::map<std::string, UniformInfo> storageBuffers;
 		std::map<std::string, UniformInfo> sampledTextures;
@@ -315,6 +319,14 @@ protected:
 	// std140 uniform buffer alignment-aware copy.
 	void copyToUniformBuffer(const UniformInfo *info, const void *src, void *dst, int count) const;
 
+	void sendTextures(const UniformInfo *info, Texture **textures, int count, bool internalupdate);
+	void sendBuffers(const UniformInfo *info, Buffer **buffers, int count, bool internalupdate);
+
+	virtual void applyTexture(const UniformInfo *info, int i, Texture *texture, UniformType basetype, bool isdefault) = 0;
+	virtual void applyBuffer(const UniformInfo *info, int i, Buffer *buffer, UniformType basetype, bool isdefault) = 0;
+
+	void flushBatchedDraws() const;
+
 	static std::string canonicaliizeUniformName(const std::string &name);
 	static bool validateInternal(StrongRef<ShaderStage> stages[], std::string& err, Reflection &reflection);
 	static DataBaseType getDataBaseType(PixelFormat format);
@@ -331,6 +343,8 @@ protected:
 	std::vector<Buffer *> activeBuffers;
 
 	std::string debugName;
+
+	std::string unsetVertexInputLocationsString;
 
 }; // Shader
 

@@ -23,15 +23,22 @@
 #include "common/Exception.h"
 #include "Touch.h"
 
-#include <SDL_version.h>
-
 // C++
 #include <algorithm>
+
+#include <SDL3/SDL_hints.h>
 
 namespace love
 {
 namespace touch
 {
+
+// See src/modules/touch/Touch.cpp.
+void setTrackpadTouchImplementation(bool enable)
+{
+	SDL_SetHint(SDL_HINT_TRACKPAD_IS_TOUCH_ONLY, enable ? "1" : "0");
+}
+
 namespace sdl
 {
 
@@ -65,19 +72,11 @@ void Touch::onEvent(Uint32 eventtype, const TouchInfo &info)
 
 	switch (eventtype)
 	{
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	case SDL_EVENT_FINGER_DOWN:
-#else
-	case SDL_FINGERDOWN:
-#endif
 		touches.erase(std::remove_if(touches.begin(), touches.end(), compare), touches.end());
 		touches.push_back(info);
 		break;
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	case SDL_EVENT_FINGER_MOTION:
-#else
-	case SDL_FINGERMOTION:
-#endif
 	{
 		for (TouchInfo &touch : touches)
 		{
@@ -86,15 +85,23 @@ void Touch::onEvent(Uint32 eventtype, const TouchInfo &info)
 		}
 		break;
 	}
-#if SDL_VERSION_ATLEAST(3, 0, 0)
 	case SDL_EVENT_FINGER_UP:
-#else
-	case SDL_FINGERUP:
-#endif
+	case SDL_EVENT_FINGER_CANCELED:
 		touches.erase(std::remove_if(touches.begin(), touches.end(), compare), touches.end());
 		break;
 	default:
 		break;
+	}
+}
+
+Touch::DeviceType Touch::getDeviceType(SDL_TouchDeviceType sdltype)
+{
+	switch (sdltype)
+	{
+		case SDL_TOUCH_DEVICE_DIRECT: return DEVICE_TOUCHSCREEN;
+		case SDL_TOUCH_DEVICE_INDIRECT_ABSOLUTE: return DEVICE_TOUCHPAD;
+		case SDL_TOUCH_DEVICE_INDIRECT_RELATIVE: return DEVICE_TOUCHPAD_RELATIVE;
+		default: return DEVICE_TOUCHSCREEN;
 	}
 }
 

@@ -26,7 +26,7 @@
 #include "common/EnumMap.h"
 
 // SDL
-#include <SDL_power.h>
+#include <SDL3/SDL_power.h>
 
 namespace love
 {
@@ -48,6 +48,7 @@ public:
 	std::string getClipboardText() const override;
 
 	PowerState getPowerInfo(int &seconds, int &percent) const override;
+	bool openURL(const std::string &url) const override;
 	std::vector<std::string> getPreferredLocales() const override;
 
 private:

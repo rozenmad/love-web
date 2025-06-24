@@ -49,12 +49,16 @@ namespace vulkan
 struct ColorAttachment
 {
 	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	VkImageLayout msaaLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 
 	bool operator==(const ColorAttachment &attachment) const
 	{
-		return format == attachment.format && 
+		return format == attachment.format &&
+			layout == attachment.layout &&
+			msaaLayout == attachment.msaaLayout &&
 			loadOp == attachment.loadOp &&
 			msaaSamples == attachment.msaaSamples;
 	}
@@ -63,6 +67,7 @@ struct ColorAttachment
 struct DepthStencilAttachment
 {
 	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -70,6 +75,7 @@ struct DepthStencilAttachment
 	bool operator==(const DepthStencilAttachment &attachment) const
 	{
 		return format == attachment.format &&
+			layout == attachment.layout &&
 			depthLoadOp == attachment.depthLoadOp &&
 			stencilLoadOp == attachment.stencilLoadOp &&
 			msaaSamples == attachment.msaaSamples;
@@ -108,11 +114,11 @@ struct RenderPassConfigurationHasher
 struct FramebufferConfiguration
 {
 	std::vector<VkImageView> colorViews;
+	std::vector<VkImageView> colorResolveViews;
 
 	struct StaticFramebufferConfiguration
 	{
 		VkImageView depthView = VK_NULL_HANDLE;
-		VkImageView resolveView = VK_NULL_HANDLE;
 
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -122,7 +128,7 @@ struct FramebufferConfiguration
 
 	bool operator==(const FramebufferConfiguration &conf) const
 	{
-		return colorViews == conf.colorViews &&
+		return colorViews == conf.colorViews && colorResolveViews == conf.colorResolveViews &&
 			(memcmp(&staticData, &conf.staticData, sizeof(StaticFramebufferConfiguration)) == 0);
 	}
 };
@@ -133,6 +139,7 @@ struct FramebufferConfigurationHasher
 	{
 		size_t hashes[] = {
 			XXH32(configuration.colorViews.data(), configuration.colorViews.size() * sizeof(VkImageView), 0),
+			XXH32(configuration.colorResolveViews.data(), configuration.colorResolveViews.size() * sizeof(VkImageView), 0),
 			XXH32(&configuration.staticData, sizeof(configuration.staticData), 0),
 		};
 
@@ -196,7 +203,6 @@ struct RenderpassState
 	RenderPassConfiguration renderPassConfiguration{};
 	FramebufferConfiguration framebufferConfiguration{};
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	std::vector<std::tuple<VkImage, PixelFormat, VkImageLayout, VkImageLayout, int, int>> transitionImages;
 	uint32_t numColorAttachments = 0;
 	uint64 packedColorAttachmentFormats = 0;
 	float width = 0.0f;
@@ -256,7 +262,7 @@ public:
 	RendererInfo getRendererInfo() const override;
 	void draw(const DrawCommand &cmd) override;
 	void draw(const DrawIndexedCommand &cmd) override;
-	void drawQuads(int start, int count, const VertexAttributes &attributes, const BufferBindings &buffers, graphics::Texture *texture) override;
+	void drawQuads(int start, int count, VertexAttributesID attributesID, const BufferBindings &buffers, graphics::Texture *texture) override;
 
 	// internal functions.
 
@@ -267,7 +273,8 @@ public:
 	void addReadbackCallback(std::function<void()> callback);
 	void submitGpuCommands(SubmitMode, void *screenshotCallbackData = nullptr);
 	VkSampler getCachedSampler(const SamplerState &sampler);
-	void setComputeShader(Shader *computeShader);
+	SharedDescriptorPools *acquireDescriptorPools(int dynamicUniformBuffers, int sampledTextures, int storageTextures, int texelBuffers, int storageBuffers);
+	void releaseDescriptorPools(SharedDescriptorPools *pools);
 	graphics::Shader::BuiltinUniformData getCurrentBuiltinUniformData();
 	const OptionalDeviceExtensions &getEnabledOptionalDeviceExtensions() const;
 	const OptionalInstanceExtensions &getEnabledOptionalInstanceExtensions() const;
@@ -276,9 +283,13 @@ public:
 	int getVsync() const;
 	void mapLocalUniformData(void *data, size_t size, VkDescriptorBufferInfo &bufferInfo);
 
-	VkPipeline createGraphicsPipeline(Shader *shader, const GraphicsPipelineConfiguration &configuration);
+	void cleanupFramebuffers(VkImageView imageView, PixelFormat format);
+
+	VkPipeline createGraphicsPipeline(Shader *shader, const GraphicsPipelineConfigurationCore &configuration, const GraphicsPipelineConfigurationNoDynamicState *noDynamicStateConfiguration);
 
 	uint32 getDeviceApiVersion() const { return deviceApiVersion; }
+
+	uint64 getRealFrameIndex() const { return realFrameIndex; }
 
 protected:
 	graphics::ShaderStage *newShaderStageInternal(ShaderStageType stage, const std::string &cachekey, const std::string &source, bool gles) override;
@@ -291,15 +302,21 @@ protected:
 	void setRenderTargetsInternal(const RenderTargets &rts, int pixelw, int pixelh, bool hasSRGBtexture) override;
 
 private:
+
+	struct SharedDescriptorPoolsRef
+	{
+		SharedDescriptorPools *pools = nullptr;
+		int referenceCount = 0;
+	};
+
 	bool checkValidationSupport();
 	void pickPhysicalDevice();
-	int rateDeviceSuitability(VkPhysicalDevice device);
+	int rateDeviceSuitability(VkPhysicalDevice device, bool querySwapChain);
 	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
 	void createLogicalDevice();
 	void createPipelineCache();
 	void initVMA();
 	void createSurface();
-	bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
 	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &availableFormats);
 	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR> &availablePresentModes);
@@ -320,9 +337,10 @@ private:
 	void createCommandBuffers();
 	void createSyncObjects();
 	void cleanup();
-	void cleanupSwapChain();
+	void cleanupSwapChain(bool destroySwapChainObject);
 	void recreateSwapChain();
 	void initDynamicState();
+	void beginSwapChainFrame();
 	void beginFrame();
 	void startRecordingGraphicsCommands();
 	void endRecordingGraphicsCommands();
@@ -332,16 +350,15 @@ private:
 		std::vector<VkVertexInputBindingDescription> &bindingDescriptions, 
 		std::vector<VkVertexInputAttributeDescription> &attributeDescriptions);
 	void prepareDraw(
-		const VertexAttributes &attributes,
+		VertexAttributesID attributesID,
 		const BufferBindings &buffers, graphics::Texture *texture,
 		PrimitiveType, CullMode);
-	void setRenderPass(const RenderTargets &rts, int pixelw, int pixelh, bool hasSRGBtexture);
+	void setRenderPass(const RenderTargets &rts, int pixelw, int pixelh);
 	void setDefaultRenderPass();
 	void startRenderPass();
 	void endRenderPass();
 	void applyScissor();
 	VkSampler createSampler(const SamplerState &sampler);
-	void cleanupUnusedObjects();
 	void requestSwapchainRecreation();
 
 	VkInstance instance = VK_NULL_HANDLE;
@@ -375,9 +392,9 @@ private:
 	std::unordered_map<FramebufferConfiguration, VkFramebuffer, FramebufferConfigurationHasher> framebuffers;
 	std::unordered_map<VkFramebuffer, bool> framebufferUsages;
 	std::unordered_map<uint64, VkSampler> samplers;
+	std::unordered_map<uint64, SharedDescriptorPoolsRef> sharedDescriptorPools;
 	VkCommandPool commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers;
-	Shader *computeShader = nullptr;
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
 	std::vector<VkFence> inFlightFences;
@@ -385,9 +402,9 @@ private:
 	int vsync = 1;
 	VkDeviceSize minUniformBufferOffsetAlignment = 0;
 	bool imageRequested = false;
-	uint32_t frameCounter = 0;
 	size_t currentFrame = 0;
 	uint32_t imageIndex = 0;
+	uint64 realFrameIndex = 0;
 	bool swapChainRecreationRequested = false;
 	bool transitionColorDepthLayouts = false;
 	VmaAllocator vmaAllocator = VK_NULL_HANDLE;

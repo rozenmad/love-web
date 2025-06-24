@@ -37,7 +37,7 @@
 #endif // LOVE_WINDOWS
 
 #ifdef LOVE_ANDROID
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #endif // LOVE_ANDROID
 
 #ifdef LOVE_LEGENDARY_CONSOLE_IO_HACK
@@ -46,10 +46,6 @@
 #include <iostream>
 #include <fstream>
 #endif // LOVE_LEGENDARY_CONSOLE_IO_HACK
-
-#ifdef LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
-#include <SDL_hints.h>
-#endif // LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
 
 // Libraries.
 #ifdef LOVE_ENABLE_LUASOCKET
@@ -80,6 +76,11 @@
 // For love::system::System::getOS.
 #ifdef LOVE_ENABLE_SYSTEM
 #	include "system/System.h"
+#endif
+
+// For love::touch::setTrackpadTouch.
+#ifdef LOVE_ENABLE_TOUCH
+#	include "touch/Touch.h"
 #endif
 
 // Scripts.
@@ -250,10 +251,6 @@ static const luaL_Reg modules[] = {
 #ifdef LOVE_LEGENDARY_CONSOLE_IO_HACK
 int w__openConsole(lua_State *L);
 #endif // LOVE_LEGENDARY_CONSOLE_IO_HACK
-
-#ifdef LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
-int w__setAccelerometerAsJoystick(lua_State *L);
-#endif
 
 #ifdef LOVE_ANDROID
 static int w_print_sdl_log(lua_State *L)
@@ -431,10 +428,26 @@ static int w__setRenderers(lua_State *L)
 	return 0;
 }
 
+static int w__setLowPowerPreferred(lua_State *L)
+{
+#ifdef LOVE_ENABLE_GRAPHICS
+	love::graphics::setLowPowerPreferred(love::luax_checkboolean(L, 1));
+#endif
+	return 0;
+}
+
 static int w__setHighDPIAllowed(lua_State *L)
 {
 #ifdef LOVE_ENABLE_WINDOW
 	love::window::setHighDPIAllowed((bool) lua_toboolean(L, 1));
+#endif
+	return 0;
+}
+
+static int w__setTrackpadTouch(lua_State *L)
+{
+#ifdef LOVE_ENABLE_TOUCH
+	love::touch::setTrackpadTouch((bool) lua_toboolean(L, 1));
 #endif
 	return 0;
 }
@@ -552,11 +565,6 @@ int luaopen_love(lua_State *L)
 	lua_setfield(L, -2, "_openConsole");
 #endif // LOVE_LEGENDARY_CONSOLE_IO_HACK
 
-#ifdef LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
-	lua_pushcfunction(L, w__setAccelerometerAsJoystick);
-	lua_setfield(L, -2, "_setAccelerometerAsJoystick");
-#endif
-
 	lua_pushcfunction(L, w__setGammaCorrect);
 	lua_setfield(L, -2, "_setGammaCorrect");
 
@@ -569,8 +577,14 @@ int luaopen_love(lua_State *L)
 	lua_pushcfunction(L, w__setRenderers);
 	lua_setfield(L, -2, "_setRenderers");
 
+	lua_pushcfunction(L, w__setLowPowerPreferred);
+	lua_setfield(L, -2, "_setLowPowerPreferred");
+
 	lua_pushcfunction(L, w__setHighDPIAllowed);
 	lua_setfield(L, -2, "_setHighDPIAllowed");
+
+	lua_pushcfunction(L, w__setTrackpadTouch);
+	lua_setfield(L, -2, "_setTrackpadTouch");
 
 	// Exposed here because we need to be able to call it before the audio
 	// module is initialized.
@@ -763,19 +777,6 @@ int w__openConsole(lua_State *L)
 }
 
 #endif // LOVE_LEGENDARY_CONSOLE_IO_HACK
-
-#ifdef LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
-int w__setAccelerometerAsJoystick(lua_State *L)
-{
-	bool enable = (bool) lua_toboolean(L, 1);
-	SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, enable ? "1" : "0");
-
-	if (enable)
-		love::luax_markdeprecated(L, 1, "accelerometerjoystick", love::API_FIELD, love::DEPRECATED_REPLACED, "love.sensor module");
-
-	return 0;
-}
-#endif // LOVE_LEGENDARY_ACCELEROMETER_AS_JOYSTICK_HACK
 
 int luaopen_love_nogame(lua_State *L)
 {

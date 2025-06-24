@@ -22,6 +22,7 @@
 
 // LOVE
 #include "common/runtime.h"
+#include "common/Reference.h"
 #include "sdl/Event.h"
 
 #include <algorithm>
@@ -65,12 +66,15 @@ static int w_poll_i(lua_State *L)
 
 int w_pump(lua_State *L)
 {
-	luax_catchexcept(L, [&]() { instance()->pump(); });
+	float waitTimeout = (float)luaL_optnumber(L, 1, 0.0f);
+	luax_catchexcept(L, [&]() { instance()->pump(waitTimeout); });
 	return 0;
 }
 
 int w_wait(lua_State *L)
 {
+	luax_markdeprecated(L, 1, "love.event.wait", API_FUNCTION, DEPRECATED_REPLACED, "waitTimeout parameter in love.event.pump");
+
 	Message *m = nullptr;
 	luax_catchexcept(L, [&]() { m = instance()->wait(); });
 	if (m != nullptr)
@@ -148,6 +152,96 @@ int w_restart(lua_State *L)
 	return 1;
 }
 
+struct DrawCallbackData
+{
+	Variant returnValues[2];
+	Reference *r;
+};
+
+static int drawCallbackInner(lua_State *L)
+{
+	auto data = (DrawCallbackData *)lua_touserdata(L, 1);
+
+	data->r->push(L);
+
+	lua_call(L, 0, 2);
+
+	data->returnValues[0] = luax_checkvariant(L, -2, false);
+	data->returnValues[1] = luax_checkvariant(L, -1, false);
+
+	lua_pop(L, 2);
+	return 0;
+}
+
+static void drawCallback(void *context, Variant *returnVal0, Variant *returnVal1)
+{
+	auto r = (Reference *)context;
+	lua_State *L = r->getPinnedL();
+
+	DrawCallbackData data = {};
+	data.r = r;
+
+	// pcall into C code to catch errors from checkvariant as well as the lua_call.
+	int err = lua_cpcall(L, drawCallbackInner, &data);
+
+	// Unfortunately, this eats the stack trace, too bad.
+	if (err != 0)
+		throw love::Exception("Error in modal draw callback: %s", lua_tostring(L, -1));
+
+	*returnVal0 = data.returnValues[0];
+	*returnVal1 = data.returnValues[1];
+}
+
+static void cleanupCallback(void *context)
+{
+	auto r = (Reference *)context;
+	delete r;
+}
+
+int w_setModalDrawCallback(lua_State *L)
+{
+	Event::ModalDrawData data = {};
+
+	if (!lua_isnoneornil(L, 1))
+	{
+		luaL_checktype(L, 1, LUA_TFUNCTION);
+
+		// Save the callback function as a Reference.
+		lua_pushvalue(L, 1);
+		Reference *r = new Reference(L);
+		lua_pop(L, 1);
+
+		data.draw = drawCallback;
+		data.cleanup = cleanupCallback;
+		data.context = r;
+	}
+
+	luax_catchexcept(L, [&]() { instance()->setModalDrawData(data); });
+	return 0;
+}
+
+int w__setDefaultModalDrawCallback(lua_State *L)
+{
+	Event::ModalDrawData data = {};
+
+	if (!lua_isnoneornil(L, 1))
+	{
+		luaL_checktype(L, 1, LUA_TFUNCTION);
+
+		// Save the callback function as a Reference.
+		lua_pushvalue(L, 1);
+		Reference *r = new Reference(L);
+		lua_pop(L, 1);
+
+		data.draw = drawCallback;
+		data.cleanup = cleanupCallback;
+		data.context = r;
+	}
+
+	luax_catchexcept(L, [&]() { instance()->setDefaultModalDrawData(data); });
+	return 0;
+}
+
 // List of functions to wrap.
 static const luaL_Reg functions[] =
 {
@@ -158,6 +252,8 @@ static const luaL_Reg functions[] =
 	{ "clear", w_clear },
 	{ "quit", w_quit },
 	{ "restart", w_restart },
+	{ "setModalDrawCallback", w_setModalDrawCallback },
+	{ "_setDefaultModalDrawCallback", w__setDefaultModalDrawCallback },
 	{ 0, 0 }
 };
 
