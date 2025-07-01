@@ -735,6 +735,30 @@ std::string Filesystem::getFullCommonPath(CommonPath path)
 		break;
 	}
 
+#elif defined(LOVE_EMSCRIPTEN)
+
+	switch (path)
+	{
+	case COMMONPATH_APP_SAVEDIR:
+	case COMMONPATH_APP_DOCUMENTS:
+		// Handled above.
+		break;
+	case COMMONPATH_USER_HOME:
+		fullPaths[path] = normalize(PHYSFS_getUserDir());
+		break;
+	case COMMONPATH_USER_APPDATA:
+		fullPaths[path] = normalize(std::string(getUserDirectory()));
+		break;
+	case COMMONPATH_USER_DESKTOP:
+		fullPaths[path] = normalize(std::string(getUserDirectory()) + "/Desktop/");
+		break;
+	case COMMONPATH_USER_DOCUMENTS:
+		fullPaths[path] = normalize(std::string(getUserDirectory()) + "/Documents/");
+		break;
+	case COMMONPATH_MAX_ENUM:
+		break;
+	}
+
 #endif
 
 	if (!fullPaths[path].empty())
